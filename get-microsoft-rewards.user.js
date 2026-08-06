@@ -1,10 +1,15 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
 // @version      1.0.1
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
+// @homepage     https://github.com/Muverix/Get-Microsoft-Rewards
+// @supportURL   https://github.com/Muverix/Get-Microsoft-Rewards/issues
+// @updateURL    https://raw.githubusercontent.com/Muverix/Get-Microsoft-Rewards/main/get-microsoft-rewards.user.js
+// @downloadURL  https://raw.githubusercontent.com/Muverix/Get-Microsoft-Rewards/main/get-microsoft-rewards.user.js
+// @license      MIT
 // @match        https://www.bing.com/*
 // @match        https://cn.bing.com/*
 // @match        https://rewards.bing.com/*
@@ -27,8 +32,8 @@
 // @connect      hot.baiwumm.com
 // @connect      hotapi.nntool.cc
 // @connect      cnxiaobai.com
-// @license      MIT
 // @run-at       document-end
+// @tips         本项目基于 MIT 协议开源，修改自原版，由 Gemini AI 辅助优化。
 // ==/UserScript==
 
 /* =========================================================================
