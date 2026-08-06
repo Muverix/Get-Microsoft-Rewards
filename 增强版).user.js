@@ -2,8 +2,8 @@
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    http://tampermonkey.net/
 // @version      1.0.0
-// @description  微软 Rewards 助手 - 自动搜索、活动、签到，优化多区域与卡片过滤逻辑（基于原版修改）。
-// @author       [Muverix]
+// @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
+// @author       Muverix
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
 // @match        https://www.bing.com/*
 // @match        https://cn.bing.com/*
@@ -32,11 +32,12 @@
 // ==/UserScript==
 
 /* =========================================================================
- * 📜 免责及开源声明
+ * 📜 版权声明与免责条款 (License & Disclaimer)
  * -------------------------------------------------------------------------
- * 1. 本脚本修改自原脚本《Get Microsoft Rewards》（原作者：QingJ）。
- * 2. 部分核心逻辑与设计思路通过gemini借鉴了 [liyan20001124-byte] 的《微软积分商城签到（全能智能重构版）》脚本。
- * 3. 本脚本仅供个人学习研究与自动化测试使用，遵从 MIT 开源协议。
+ * 1. 本脚本基于 QingJ 的开源项目《Get Microsoft Rewards》二次开发。
+ * 2. 借助 Gemini AI，参考并融合了 liyan20001124-byte 的《微软积分商城签到（全能智能重构版）》的核心逻辑与优化思路。
+ * 3. 本脚本遵循 MIT 开源许可协议，仅供个人学习研究与自动化测试使用。
+ * 4. 作者不对使用本脚本可能产生的任何风险（如账号积分变动或风控等）承担任何法律责任，请合理使用。
  * ========================================================================= */
 
 (function () {
@@ -797,8 +798,8 @@
                 // =========================================================================
 
                 // 5. 阅读任务与活动列表统计
-                if (state.readCur === undefined) state.readCur = 30;
-                if (state.readMax === undefined) state.readMax = 30;
+                if (state.readCur === undefined) state.readCur = 10;
+                if (state.readMax === undefined) state.readMax = 10;
 
                 state.promosTotal = allP.length;
                 state.promosDone = allP.filter(p => p.complete || p.attributes?.complete === 'true' || p.attributes?.complete === 'True').length;
@@ -839,8 +840,8 @@
         }
 
         // 4. 阅读任务
-        const readCur = state.readCur ?? 30;
-        const readMax = state.readMax ?? 30;
+        const readCur = state.readCur ?? 10;
+        const readMax = state.readMax ?? 10;
         if (nodes.read) nodes.read.textContent = `${readCur}/${readMax}`;
         if (nodes.readBar) nodes.readBar.style.width = readMax ? `${(readCur / readMax) * 100}%` : '0%';
 
@@ -1067,7 +1068,7 @@
 
                 if (p && p.attributes) {
                     let cur = parseInt(p.attributes.progress) || 0;
-                    let max = parseInt(p.attributes.max) || 30;
+                    let max = parseInt(p.attributes.max) || 10;
                     state.readCur = cur;
                     state.readMax = max;
                     render();
