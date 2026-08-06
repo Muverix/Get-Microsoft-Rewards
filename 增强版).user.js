@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.1
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
@@ -607,214 +607,225 @@
 
     // 数据刷新函数（修复 allP 报错 + 本地签到日期双重校验）
     async function updateData() {
-        if (state.updatingPromise) return state.updatingPromise;
-        state.updating = true;
-        state.updatingPromise = (async () => {
+    if (state.updatingPromise) return state.updatingPromise;
+    state.updating = true;
+    state.updatingPromise = (async () => {
+        try {
+            const cookie = await getCookies('https://rewards.bing.com');
+
+            let htmlRes = '';
             try {
-                const cookie = await getCookies('https://rewards.bing.com');
+                htmlRes = await gmRequest({
+                    method: 'GET',
+                    url: 'https://rewards.bing.com/',
+                    headers: {
+                        'User-Agent': CONFIG.ua.pc,
+                        'Cookie': cookie,
+                        'Referer': 'https://www.bing.com/'
+                    }
+                });
 
-                let htmlRes = '';
+                const tokenMatch = htmlRes.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)
+                                || htmlRes.match(/value="([^"]+)"[^>]*name="__RequestVerificationToken"/i)
+                                || htmlRes.match(/RequestVerificationToken["']?\s*[:=]\s*["']([^"']+)["']/i)
+                                || htmlRes.match(/"verificationToken"\s*:\s*["']([^"']+)["']/i);
+                if (tokenMatch) {
+                    state.searchToken = tokenMatch[1];
+                }
+            } catch (e) {}
+
+            let dashData = null;
+
+            if (htmlRes) {
+                const dashMatch = htmlRes.match(/var\s+dashboard\s*=\s*({[\s\S]*?});\s*var/i)
+                               || htmlRes.match(/window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/i);
+                if (dashMatch) {
+                    try { dashData = JSON.parse(dashMatch[1]); } catch (e) {}
+                }
+            }
+
+            if (!dashData || !dashData.userProfile) {
                 try {
-                    htmlRes = await gmRequest({
-                        method: 'GET',
-                        url: 'https://rewards.bing.com/',
-                        headers: {
-                            'User-Agent': CONFIG.ua.pc,
-                            'Cookie': cookie,
-                            'Referer': 'https://www.bing.com/'
-                        }
-                    });
+                    const token = await getAccessToken();
+                    if (token) {
+                        const dapiRes = await gmRequest({
+                            method: 'GET',
+                            url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613&_=${Date.now()}`,
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'X-Rewards-AppId': 'SAAndroid/31.4.2110003555',
+                                'X-Rewards-IsMobile': 'true'
+                            }
+                        });
+                        const parsed = JSON.parse(dapiRes);
+                        dashData = parsed.response?.dashboard || parsed.response || parsed;
+                    }
+                } catch (e) {
+                    console.error('[Rewards] DAPI 请求错误:', e);
+                }
+            }
 
-                    const tokenMatch = htmlRes.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)
-                                    || htmlRes.match(/value="([^"]+)"[^>]*name="__RequestVerificationToken"/i)
-                                    || htmlRes.match(/RequestVerificationToken["']?\s*[:=]\s*["']([^"']+)["']/i)
-                                    || htmlRes.match(/"verificationToken"\s*:\s*["']([^"']+)["']/i);
-                    if (tokenMatch) {
-                        state.searchToken = tokenMatch[1];
+            if (!dashData) {
+                log('❌ 获取数据失败，请确认已登录 rewards.bing.com');
+                return;
+            }
+
+            dashboard = dashData;
+
+            // 1. 解析等级与积分
+            const profile = dashData.userProfile || dashData.profile || {};
+            const balance = dashData.balance;
+
+            if (typeof balance === 'number') {
+                state.points = balance;
+            } else if (balance && typeof balance === 'object') {
+                state.points = balance.availablePoints ?? balance.points ?? 0;
+            } else {
+                state.points = profile.availablePoints ?? profile.points ?? dashData.availablePoints ?? 0;
+            }
+
+            const rawLevel = (typeof balance === 'object' && balance?.level) 
+                          || balance?.levelInfo?.activeLevel 
+                          || profile.level 
+                          || profile.levelInfo?.activeLevel 
+                          || 'Level1';
+            state.level = parseInt(String(rawLevel).replace(/\D/g, '')) || 1;
+
+            // 2. 搜索进度解析
+            let searchCur = 0, searchMax = 0;
+            const candidateCounters = [];
+
+            if (Array.isArray(dashData.counters)) candidateCounters.push(...dashData.counters);
+            if (Array.isArray(dashData.userCounters)) candidateCounters.push(...dashData.userCounters);
+            if (Array.isArray(dashData.userStatus?.counters)) candidateCounters.push(...dashData.userStatus.counters);
+
+            const promos = [
+                ...(Array.isArray(dashData.promotions) ? dashData.promotions : []),
+                ...(Array.isArray(dashData.morePromotions) ? dashData.morePromotions : []),
+                ...(Array.isArray(dashData.userStatus?.promotions) ? dashData.userStatus.promotions : [])
+            ];
+
+            promos.forEach(p => {
+                const name = ((p.name || p.id || p.title || p.type || '') + '').toLowerCase();
+                if (name.includes('search')) {
+                    candidateCounters.push(p);
+                }
+            });
+
+            candidateCounters.forEach(item => {
+                if (!item || typeof item !== 'object') return;
+                const cur = Number(item.pointProgress ?? item.progress ?? item.current ?? item.points ?? item.attributes?.progress) || 0;
+                const max = Number(item.pointProgressMax ?? item.pointMax ?? item.max ?? item.maxPoints ?? item.attributes?.max) || 0;
+                searchCur += cur;
+                searchMax += max;
+            });
+
+            state.searchCur = searchCur;
+            state.searchMax = searchMax > 0 ? searchMax : (searchCur > 0 ? searchCur : (state.level > 1 ? 90 : 60));
+            state.pcCur = state.searchCur;
+            state.pcMax = state.searchMax;
+
+            // 3. 统一收集所有活动列表
+            const today = getDateStr();
+            const dailySet = dashData.dailySetPromotions?.[today] 
+                          || Object.values(dashData.dailySetPromotions || {}).flat() 
+                          || [];
+            const morePromos = dashData.morePromotions || dashData.promotions || [];
+            const activities = dashData.activities || [];
+
+            const allP = [
+                ...(Array.isArray(dailySet) ? dailySet : []),
+                ...(Array.isArray(morePromos) ? morePromos : []),
+                ...(Array.isArray(activities) ? activities : [])
+            ];
+
+            // 4. 签到状态解析
+            const lastSignDate = GM_getValue("Config.lastSignDate", "");
+            const isLocalSigned = !!lastSignDate && lastSignDate.startsWith(today);
+
+            const dashStr = JSON.stringify(dashData || {});
+            let isRemoteSigned = false;
+
+            // A. 优先从常规活动列表中查找
+            const checkInPromo = allP.find(p => {
+                if (!p || typeof p !== 'object') return false;
+                const str = JSON.stringify(p).toLowerCase();
+                if (str.includes('fosbury')) return false;
+                return str.includes('checkin') || str.includes('signin') || str.includes('streak') || str.includes('签到');
+            });
+
+            if (checkInPromo) {
+                const cur = Number(checkInPromo.pointProgress ?? checkInPromo.progress ?? checkInPromo.attributes?.progress ?? 0);
+                const max = Number(checkInPromo.pointProgressMax ?? checkInPromo.max ?? checkInPromo.attributes?.max ?? 0);
+                isRemoteSigned = checkInPromo.complete === true || 
+                                 checkInPromo.complete === 'true' || 
+                                 checkInPromo.attributes?.complete === 'true' || 
+                                 checkInPromo.attributes?.complete === 'True' || 
+                                 (max > 0 && cur >= max);
+            }
+
+            // B. 网页数据直接正则扫描
+            if (!isRemoteSigned && (dashStr.includes('"claimedToday":true') || dashStr.includes(`"${today}`))) {
+                isRemoteSigned = true;
+            }
+
+            // C. 若网页未扫描到，静默请求移动端 DAPI 接口扫描
+            if (!isRemoteSigned && !isLocalSigned) {
+                try {
+                    const token = typeof getAccessToken === 'function' ? await getAccessToken() : null;
+                    if (token) {
+                        const dapiRes = await gmRequest({
+                            method: 'GET',
+                            url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&version=33.8.440724006&_=${Date.now()}`,
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'User-Agent': CONFIG.ua.mobile,
+                                'X-Rewards-AppId': 'SAAndroid/33.8.440724006',
+                                'X-Rewards-IsMobile': 'true'
+                            }
+                        });
+                        const resStr = typeof dapiRes === 'string' ? dapiRes : JSON.stringify(dapiRes);
+                        if (resStr.includes('"claimedToday":true') || resStr.includes('"claimedToday":"true"') || resStr.includes(`"${today}`)) {
+                            isRemoteSigned = true;
+                            GM_setValue("Config.lastSignDate", today);
+                        }
                     }
                 } catch (e) {}
-
-                let dashData = null;
-
-                if (htmlRes) {
-                    const dashMatch = htmlRes.match(/var\s+dashboard\s*=\s*({[\s\S]*?});\s*var/i)
-                                   || htmlRes.match(/window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/i);
-                    if (dashMatch) {
-                        try { dashData = JSON.parse(dashMatch[1]); } catch (e) {}
-                    }
-                }
-
-                if (!dashData || !dashData.userProfile) {
-                    try {
-                        const token = await getAccessToken();
-                        if (token) {
-                            const dapiRes = await gmRequest({
-                                method: 'GET',
-                                url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613&_=${Date.now()}`,
-                                headers: {
-                                    'Authorization': `Bearer ${token}`,
-                                    'X-Rewards-AppId': 'SAAndroid/31.4.2110003555',
-                                    'X-Rewards-IsMobile': 'true'
-                                }
-                            });
-                            const parsed = JSON.parse(dapiRes);
-                            dashData = parsed.response?.dashboard || parsed.response || parsed;
-                        }
-                    } catch (e) {
-                        console.error('[Rewards] DAPI 请求错误:', e);
-                    }
-                }
-
-                if (!dashData) {
-                    log('❌ 获取数据失败，请确认已登录 rewards.bing.com');
-                    return;
-                }
-
-                dashboard = dashData;
-
-                // 1. 解析等级与积分
-                const profile = dashData.userProfile || dashData.profile || {};
-                const balance = dashData.balance;
-
-                if (typeof balance === 'number') {
-                    state.points = balance;
-                } else if (balance && typeof balance === 'object') {
-                    state.points = balance.availablePoints ?? balance.points ?? 0;
-                } else {
-                    state.points = profile.availablePoints ?? profile.points ?? dashData.availablePoints ?? 0;
-                }
-
-                const rawLevel = (typeof balance === 'object' && balance?.level) 
-                              || balance?.levelInfo?.activeLevel 
-                              || profile.level 
-                              || profile.levelInfo?.activeLevel 
-                              || 'Level1';
-                state.level = parseInt(String(rawLevel).replace(/\D/g, '')) || 1;
-
-                // 2. 搜索进度解析
-                let searchCur = 0, searchMax = 0;
-                const candidateCounters = [];
-
-                if (Array.isArray(dashData.counters)) candidateCounters.push(...dashData.counters);
-                if (Array.isArray(dashData.userCounters)) candidateCounters.push(...dashData.userCounters);
-                if (Array.isArray(dashData.userStatus?.counters)) candidateCounters.push(...dashData.userStatus.counters);
-
-                const promos = [
-                    ...(Array.isArray(dashData.promotions) ? dashData.promotions : []),
-                    ...(Array.isArray(dashData.morePromotions) ? dashData.morePromotions : []),
-                    ...(Array.isArray(dashData.userStatus?.promotions) ? dashData.userStatus.promotions : [])
-                ];
-
-                promos.forEach(p => {
-                    const name = ((p.name || p.id || p.title || p.type || '') + '').toLowerCase();
-                    if (name.includes('search')) {
-                        candidateCounters.push(p);
-                    }
-                });
-
-                candidateCounters.forEach(item => {
-                    if (!item || typeof item !== 'object') return;
-                    const cur = Number(item.pointProgress ?? item.progress ?? item.current ?? item.points ?? item.attributes?.progress) || 0;
-                    const max = Number(item.pointProgressMax ?? item.pointMax ?? item.max ?? item.maxPoints ?? item.attributes?.max) || 0;
-                    searchCur += cur;
-                    searchMax += max;
-                });
-
-                state.searchCur = searchCur;
-                state.searchMax = searchMax > 0 ? searchMax : (searchCur > 0 ? searchCur : (state.level > 1 ? 90 : 60));
-                state.pcCur = state.searchCur;
-                state.pcMax = state.searchMax;
-
-                // 3. 统一收集所有活动列表
-                const today = getDateStr();
-                const dailySet = dashData.dailySetPromotions?.[today] 
-                              || Object.values(dashData.dailySetPromotions || {}).flat() 
-                              || [];
-                const morePromos = dashData.morePromotions || dashData.promotions || [];
-                const activities = dashData.activities || [];
-
-                const allP = [
-                    ...(Array.isArray(dailySet) ? dailySet : []),
-                    ...(Array.isArray(morePromos) ? morePromos : []),
-                    ...(Array.isArray(activities) ? activities : [])
-                ];
-
-                // 4. 签到状态解析（替换此整段）
-                const lastSignDate = GM_getValue("Config.lastSignDate", "");
-                const isLocalSigned = !!lastSignDate && lastSignDate.startsWith(today);
-
-                // 全局提取网页原始 JSON 字符串进行关键字强校验
-                const dashStr = JSON.stringify(dashData || {});
-                let isRemoteSigned = false;
-
-                // A. 优先从常规活动列表中查找
-                const checkInPromo = allP.find(p => {
-                    if (!p || typeof p !== 'object') return false;
-                    const str = JSON.stringify(p).toLowerCase();
-                    if (str.includes('fosbury')) return false;
-                    return str.includes('checkin') || str.includes('signin') || str.includes('streak') || str.includes('签到');
-                });
-
-                if (checkInPromo) {
-                    const cur = Number(checkInPromo.pointProgress ?? checkInPromo.progress ?? checkInPromo.attributes?.progress ?? 0);
-                    const max = Number(checkInPromo.pointProgressMax ?? checkInPromo.max ?? checkInPromo.attributes?.max ?? 0);
-                    isRemoteSigned = checkInPromo.complete === true || 
-                                     checkInPromo.complete === 'true' || 
-                                     checkInPromo.attributes?.complete === 'true' || 
-                                     checkInPromo.attributes?.complete === 'True' || 
-                                     (max > 0 && cur >= max);
-                }
-
-                // B. 网页数据直接正则扫描（防止深度层级嵌套漏检）
-                if (!isRemoteSigned && (dashStr.includes('"claimedToday":true') || dashStr.includes(`"${today}`))) {
-                    isRemoteSigned = true;
-                }
-
-                // C. 若网页未扫描到，静默请求移动端 DAPI 接口扫描
-                if (!isRemoteSigned && !isLocalSigned) {
-                    try {
-                        const token = typeof getAccessToken === 'function' ? await getAccessToken() : null;
-                        if (token) {
-                            const dapiRes = await gmRequest({
-                                method: 'GET',
-                                url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&version=33.8.440724006&_=${Date.now()}`,
-                                headers: {
-                                    'Authorization': `Bearer ${token}`,
-                                    'User-Agent': CONFIG.ua.mobile,
-                                    'X-Rewards-AppId': 'SAAndroid/33.8.440724006',
-                                    'X-Rewards-IsMobile': 'true'
-                                }
-                            });
-                            const resStr = typeof dapiRes === 'string' ? dapiRes : JSON.stringify(dapiRes);
-                            if (resStr.includes('"claimedToday":true') || resStr.includes('"claimedToday":"true"') || resStr.includes(`"${today}`)) {
-                                isRemoteSigned = true;
-                                GM_setValue("Config.lastSignDate", today); // 自动同步写入本地记录
-                            }
-                        }
-                    } catch (e) {}
-                }
-
-                state.checkedIn = isRemoteSigned || isLocalSigned;
-                // =========================================================================
-
-                // 5. 阅读任务与活动列表统计
-                if (state.readCur === undefined) state.readCur = 10;
-                if (state.readMax === undefined) state.readMax = 10;
-
-                state.promosTotal = allP.length;
-                state.promosDone = allP.filter(p => p.complete || p.attributes?.complete === 'true' || p.attributes?.complete === 'True').length;
-
-                render();
-                log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts | 搜索: ${state.searchCur}/${state.searchMax}`);
-            } catch (e) {
-                console.error('updateData error:', e);
-                log(`⚠️ 获取数据出错: ${e.message}`);
-            } finally {
-                state.updating = false;
-                state.updatingPromise = null;
             }
-        })();
-        return state.updatingPromise;
+
+            state.checkedIn = isRemoteSigned || isLocalSigned;
+
+            // =========================================================================
+            // 5. 阅读任务与活动列表统计（优先从活动列表中提取真实进度，修复日志进度不一致问题）
+            const readOfferId = 'ENUS_readarticle3_30points';
+            const readPromo = allP.find(p => {
+                if (!p || typeof p !== 'object') return false;
+                const offerId = p.attributes?.offerid || p.offerid || '';
+                return offerId === readOfferId || offerId.toLowerCase().includes('readarticle');
+            });
+
+            if (readPromo && readPromo.attributes) {
+                state.readCur = parseInt(readPromo.attributes.progress) || 0;
+                state.readMax = parseInt(readPromo.attributes.max) || 30;
+            } else {
+                if (state.readCur === undefined) state.readCur = 0;
+                if (state.readMax === undefined) state.readMax = 30;
+            }
+
+            state.promosTotal = allP.length;
+            state.promosDone = allP.filter(p => p.complete || p.attributes?.complete === 'true' || p.attributes?.complete === 'True').length;
+
+            render();
+            log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts | 搜索: ${state.searchCur}/${state.searchMax}`);
+        } catch (e) {
+            console.error('updateData error:', e);
+            log(`⚠️ 获取数据出错: ${e.message}`);
+        } finally {
+            state.updating = false;
+            state.updatingPromise = null;
+        }
+    })();
+    return state.updatingPromise;
 }
     // UI 渲染函数（精准适配原生节点映射）
     function render() {
@@ -1028,114 +1039,137 @@
     
     // 阅读
     const runRead = async () => {
-        nodes.btnRead.disabled = true;
-        markBusy(1);
-        await waitWhilePaused();
-        log('⏳ 开始阅读任务...');
+    nodes.btnRead.disabled = true;
+    markBusy(1);
+    await waitWhilePaused();
+    log('⏳ 开始阅读任务...');
 
-        const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
+    const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
 
-        // 1. 生成 56 位无连字符特制 HEX ID
-        const generateDapiId = () => {
-            const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-            const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-            return (raw1 + raw2).slice(0, 56);
-        };
+    // 1. 生成 56 位无连字符特制 HEX ID
+    const generateDapiId = () => {
+        const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+        const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+        return (raw1 + raw2).slice(0, 56);
+    };
 
-        const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-        const appId = "SAAndroid/33.8.440724006";
-        const readOfferId = 'ENUS_readarticle3_30points';
+    const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
+    const appId = "SAAndroid/33.8.440724006";
+    const readOfferId = 'ENUS_readarticle3_30points';
 
-        try {
-            // 2. 获取当前真实阅读进度
-            const info = await withAccessTokenRequest(token => gmRequest({
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
-                headers: {
-                    'authorization': `Bearer ${token}`,
-                    'user-agent': appUa,
-                    'x-rewards-appid': appId,
-                    'x-rewards-ismobile': 'true',
-                    'x-rewards-country': region,
-                    'x-rewards-language': 'zh',
-                    'x-rewards-partnerid': 'startapp',
-                    'x-rewards-flights': 'rwgobig'
-                }
-            }));
+    try {
+        // 2. 获取当前真实阅读进度
+        const info = await withAccessTokenRequest(token => gmRequest({
+            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
+            headers: {
+                'authorization': `Bearer ${token}`,
+                'user-agent': appUa,
+                'x-rewards-appid': appId,
+                'x-rewards-ismobile': 'true',
+                'x-rewards-country': region,
+                'x-rewards-language': 'zh',
+                'x-rewards-partnerid': 'startapp',
+                'x-rewards-flights': 'rwgobig'
+            }
+        }));
 
-            if (info) {
-                const d = typeof info === 'string' ? JSON.parse(info) : info;
-                const p = d.response?.promotions?.find(x => x.attributes?.offerid === readOfferId);
+        if (info) {
+            const d = typeof info === 'string' ? JSON.parse(info) : info;
+            const p = d.response?.promotions?.find(x => x.attributes?.offerid === readOfferId);
 
-                if (p && p.attributes) {
-                    let cur = parseInt(p.attributes.progress) || 0;
-                    let max = parseInt(p.attributes.max) || 10;
-                    state.readCur = cur;
-                    state.readMax = max;
-                    render();
+            if (p && p.attributes) {
+                let cur = parseInt(p.attributes.progress) || 0;
+                let max = parseInt(p.attributes.max) || 30;
+                
+                // 判断步长：若 max 为 30 则每篇 +3 分（共 10 篇）；若 max 为 10 则每篇 +1 分
+                const step = max >= 30 ? 3 : 1;
+                const totalArticles = Math.ceil(max / step);
 
-                    if (cur >= max) {
-                        log(`✅ 阅读任务已完成 (${cur}/${max})`);
-                    } else {
-                        log(`📖 当前阅读进度 ${cur}/${max}，准备刷文章...`);
+                state.readCur = cur;
+                state.readMax = max;
+                render();
 
-                        // 3. 循环上报文章阅读
-                        for (let i = cur; i < max; i++) {
-                            await waitWhilePaused();
-                            log(`📖 正在阅读第 ${i + 1}/${max} 篇文章...`);
+                if (cur >= max) {
+                    log(`✅ 阅读任务已完成 (${cur}/${max})`);
+                } else {
+                    log(`📖 当前阅读进度 ${cur}/${max}，准备刷文章...`);
 
-                            const res = await withAccessTokenRequest(token => gmRequest({
-                                method: 'POST',
-                                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
-                                headers: {
-                                    'content-type': 'application/json; charset=utf-8',
-                                    'user-agent': appUa,
-                                    'authorization': `Bearer ${token}`,
-                                    'x-rewards-appid': appId,
-                                    'x-rewards-ismobile': 'true',
-                                    'x-rewards-country': region,
-                                    'x-rewards-language': 'zh',
-                                    'x-rewards-partnerid': 'startapp',
-                                    'x-rewards-flights': 'rwgobig'
-                                },
-                                data: JSON.stringify({
-                                    amount: 1,
-                                    country: region,
-                                    id: generateDapiId(),
-                                    type: 101,
-                                    channel: 'SAAndroid',
-                                    attributes: { offerid: readOfferId }
-                                })
-                            })).catch(() => null);
+                    let currentArticleIdx = Math.floor(cur / step);
 
-                            if (res) {
-                                const resData = typeof res === 'string' ? JSON.parse(res) : res;
-                                console.log(`[Rewards 阅读上报响应 ${i + 1}/${max}]:`, resData);
-                            }
+                    // 3. 修复：去掉了 && state.running，兼容单独点击“阅读”按钮
+                    // 如果你的脚本有全局终止/停止按钮，可以用 !state.stopped 代替
+                    while (cur < max) {
+                        // 如果全局点下了停止，才主动跳出
+                        if (state.stopped) break;
 
-                            state.readCur = i + 1;
+                        await waitWhilePaused();
+                        currentArticleIdx++;
+                        log(`📖 正在阅读第 ${currentArticleIdx}/${totalArticles} 篇文章 (进度: ${cur}/${max})...`);
+
+                        const res = await withAccessTokenRequest(token => gmRequest({
+                            method: 'POST',
+                            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
+                            headers: {
+                                'content-type': 'application/json; charset=utf-8',
+                                'user-agent': appUa,
+                                'authorization': `Bearer ${token}`,
+                                'x-rewards-appid': appId,
+                                'x-rewards-ismobile': 'true',
+                                'x-rewards-country': region,
+                                'x-rewards-language': 'zh',
+                                'x-rewards-partnerid': 'startapp',
+                                'x-rewards-flights': 'rwgobig'
+                            },
+                            data: JSON.stringify({
+                                amount: 1,
+                                country: region,
+                                id: generateDapiId(),
+                                type: 101,
+                                channel: 'SAAndroid',
+                                attributes: { offerid: readOfferId }
+                            })
+                        })).catch(() => null);
+
+                        if (res) {
+                            const resData = typeof res === 'string' ? JSON.parse(res) : res;
+                            console.log(`[Rewards 阅读上报响应 ${currentArticleIdx}/${totalArticles}]:`, resData);
+
+                            // 阅读成功后：进度 +step(3)，积分固定 +3
+                            cur = Math.min(max, cur + step);
+                            state.points = (state.points || 0) + 3;
+                            state.readCur = cur;
                             render();
-                            await sleep(2500); // 防刷新间隔
+
+                            log(`🎉 第 ${currentArticleIdx}/${totalArticles} 篇阅读成功 (+3积分) | 进度: ${state.readCur}/${max} | 当前总积分: ${state.points}`);
+                        } else {
+                            log(`⚠️ 第 ${currentArticleIdx}/${totalArticles} 篇上报未收到有效响应，继续下一篇...`);
                         }
 
-                        log('✅ 阅读任务执行完毕');
+                        if (cur < max) {
+                            await sleep(typeof randomRange === 'function' ? randomRange(2500, 4500) : 2500);
+                        }
                     }
-                } else {
-                    log(`⚠️ 未找到阅读任务卡片 (offerid: ${readOfferId})`);
+
+                    log(`✅ 阅读任务执行完毕 (最终进度: ${state.readCur}/${max})`);
                 }
             } else {
-                log('❌ 获取阅读进度失败');
+                log(`⚠️ 未找到阅读任务卡片 (offerid: ${readOfferId})`);
             }
-
-            await updateData();
-        } catch (e) {
-            log('❌ 阅读出错: ' + e.message);
-            console.error('[Rewards 阅读异常]:', e);
-        } finally {
-            nodes.btnRead.disabled = false;
-            markBusy(-1);
+        } else {
+            log('❌ 获取阅读进度失败');
         }
-    };
-    nodes.btnRead.onclick = runRead;
+
+        await updateData();
+    } catch (e) {
+        log('❌ 阅读出错: ' + e.message);
+        console.error('[Rewards 阅读异常]:', e);
+    } finally {
+        nodes.btnRead.disabled = false;
+        markBusy(-1);
+    }
+};
+
+nodes.btnRead.onclick = runRead;
 
     // 搜索 (复用逻辑)
     // 获取 Reward Token (活动专用)
@@ -1446,7 +1480,7 @@
         await updateData();
 
         // 执行单次搜索与奖励触发
-        const doSearch = async (query, isMobile) => {
+        const doSearch = async (query, isMobile = false) => {
             const host = isMobile ? 'cn.bing.com' : 'www.bing.com';
             const cookie = await getCookies(`https://${host}`);
             await waitWhilePaused();
@@ -1547,33 +1581,24 @@
         // PC Search 循环 (计算还差多少分，每次按 3 分计算次数)
         const pcNeed = Math.ceil((state.pcMax - state.pcCur) / 3);
         if (pcNeed > 0) {
-            log(`💻 开始 PC 搜索，共需执行 ${pcNeed} 次`);
+            log(`💻 开始搜索任务，共需执行 ${pcNeed} 次`);
             for (let i = 0; i < pcNeed && state.running; i++) {
                 await waitWhilePaused();
+                
+                // ✨ 核心改为：在每次新搜索执行前同步数据（第1次搜索已在循环前同步过，后续每次倒计时结束后、搜前同步）
+                if (i > 0) {
+                    await updateData();
+                }
+
                 const q = await getHotQuery();
                 await doSearch(q, false);
                 await checkPause();
+
                 if (!state.running) break;
                 await preciseWait(randomRange(CONFIG.pc.minDelay, CONFIG.pc.maxDelay));
-                if ((i + 1) % 3 === 0) await updateData();
             }
         } else {
-            log('💻 PC 搜索已全部完成');
-        }
-
-        // Mobile Search 循环
-        const mobNeed = Math.ceil((state.mobileMax - state.mobileCur) / 3);
-        if (mobNeed > 0 && state.running) {
-            log(`📱 开始移动搜索，共需执行 ${mobNeed} 次`);
-            for (let i = 0; i < mobNeed && state.running; i++) {
-                await waitWhilePaused();
-                const q = await getHotQuery();
-                await doSearch(q, true);
-                await checkPause();
-                if (!state.running) break;
-                await preciseWait(randomRange(CONFIG.mobile.minDelay, CONFIG.mobile.maxDelay));
-                if ((i + 1) % 3 === 0) await updateData();
-            }
+            log('💻 搜索任务已全部完成');
         }
 
         await updateData();
@@ -1629,7 +1654,7 @@
             } catch { }
         } catch { }
         //GM_setValue("Config.lastSignDate", "");
-        log('🌟 脚本就绪 v1.0.0');
+        log('🌟 脚本就绪 v1.0.1');
     })();
 
     setInterval(updateData, 60000);
