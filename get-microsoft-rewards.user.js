@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.0.2
+// @version      1.0.3
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
+// @license      MIT
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
-// @homepage     https://github.com/Muverix/Get-Microsoft-Rewards
+// @homepage     https://scriptcat.org/zh-CN/script-show-page/7354
 // @supportURL   https://github.com/Muverix/Get-Microsoft-Rewards/issues
 // @updateURL    https://fastly.jsdelivr.net/gh/Muverix/Get-Microsoft-Rewards@main/get-microsoft-rewards.user.js
 // @downloadURL  https://fastly.jsdelivr.net/gh/Muverix/Get-Microsoft-Rewards@main/get-microsoft-rewards.user.js
-// @license      MIT
 // @match        https://www.bing.com/*
 // @match        https://cn.bing.com/*
 // @match        https://rewards.bing.com/*
@@ -33,7 +33,6 @@
 // @connect      hotapi.nntool.cc
 // @connect      cnxiaobai.com
 // @run-at       document-end
-// @tips         本项目基于 MIT 协议开源，修改自原版，由 Gemini AI 辅助优化。
 // ==/UserScript==
 
 /* =========================================================================
@@ -56,6 +55,7 @@
             pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0',
             mobile: 'Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006'
         },
+        mobileApi: {appId: 'SAAndroid/33.8.440724006'},
         // 多个热搜API备用源
         hotApis: [
             { url: 'https://hot.baiwumm.com/api/', sources: ['weibo', 'douyin', 'baidu', 'zhihu', 'toutiao'] },
@@ -187,6 +187,11 @@
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     };
     const isJSON = s => { try { JSON.parse(s); return true; } catch { return false; } };
+    const generateDapiId = () => {
+    const raw1 = uuid().replace(/-/g, '');
+    const raw2 = uuid().replace(/-/g, '');
+    return (raw1 + raw2).slice(0, 56);
+    };
 
     // GM_xmlhttpRequest 封装
     async function gmRequest(options) {
@@ -821,7 +826,11 @@
             state.promosDone = allP.filter(p => p.complete || p.attributes?.complete === 'true' || p.attributes?.complete === 'True').length;
 
             render();
-            log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts | 搜索: ${state.searchCur}/${state.searchMax}`);
+            const newStatus = `${state.level}-${state.points}-${state.searchCur}-${state.searchMax}`;
+            if (state.lastStatus !== newStatus) {
+                log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts | 搜索: ${state.searchCur}/${state.searchMax}`);
+                state.lastStatus = newStatus;
+            }
         } catch (e) {
             console.error('updateData error:', e);
             log(`⚠️ 获取数据出错: ${e.message}`);
@@ -953,15 +962,15 @@
         const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
 
         // 生成 56 位纯 16 进制无连字符特制 ID
-        const generateDapiId = () => {
-            const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-            const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-            return (raw1 + raw2).slice(0, 56);
-        };
+        // const generateDapiId = () => {
+        //     const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+        //     const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+        //     return (raw1 + raw2).slice(0, 56);
+        // };
 
         // 已更新为 MEIZU 20 (Android 16 / Chrome 150) UA + BingSapphire 包名后缀
-        const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-        const appId = "SAAndroid/33.8.440724006";
+        // const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
+        // const appId = "SAAndroid/33.8.440724006";
 
         // 优先获取动态 offerId，无则使用 Sapphire 默认 ID
         let offerId = "Gamification_Sapphire_DailyCheckIn";
@@ -984,9 +993,9 @@
                 url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
                 headers: {
                     'content-type': 'application/json; charset=UTF-8',
-                    'user-agent': appUa,
+                    'user-agent': CONFIG.ua.mobile,
                     'authorization': `Bearer ${token}`,
-                    'x-rewards-appid': appId,
+                    'x-rewards-appid': CONFIG.mobileApi.appId,
                     'x-rewards-ismobile': 'true',
                     'x-rewards-country': region,
                     'x-rewards-language': 'zh',
@@ -1052,14 +1061,14 @@
     const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
 
     // 1. 生成 56 位无连字符特制 HEX ID
-    const generateDapiId = () => {
-        const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-        const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-        return (raw1 + raw2).slice(0, 56);
-    };
+    // const generateDapiId = () => {
+    //     const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+    //     const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+    //     return (raw1 + raw2).slice(0, 56);
+    // };
 
-    const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-    const appId = "SAAndroid/33.8.440724006";
+    // const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
+    // const appId = "SAAndroid/33.8.440724006";
     const readOfferId = 'ENUS_readarticle3_30points';
 
     try {
@@ -1068,8 +1077,8 @@
             url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
             headers: {
                 'authorization': `Bearer ${token}`,
-                'user-agent': appUa,
-                'x-rewards-appid': appId,
+                'user-agent': CONFIG.ua.mobile,
+                'x-rewards-appid': CONFIG.mobileApi.appId,
                 'x-rewards-ismobile': 'true',
                 'x-rewards-country': region,
                 'x-rewards-language': 'zh',
@@ -1116,9 +1125,9 @@
                             url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
                             headers: {
                                 'content-type': 'application/json; charset=utf-8',
-                                'user-agent': appUa,
+                                'user-agent': CONFIG.ua.mobile,
                                 'authorization': `Bearer ${token}`,
-                                'x-rewards-appid': appId,
+                                'x-rewards-appid': CONFIG.mobileApi.appId,
                                 'x-rewards-ismobile': 'true',
                                 'x-rewards-country': region,
                                 'x-rewards-language': 'zh',
@@ -1176,18 +1185,6 @@
 
 nodes.btnRead.onclick = runRead;
 
-    // 搜索 (复用逻辑)
-    // 获取 Reward Token (活动专用)
-    // async function getSearchToken() {
-    //     try {
-    //         const html = await gmRequest({ url: 'https://rewards.bing.com/' });
-    //         // 尝试匹配两种常见的 Token 格式
-    //         const token = html.match(/RequestVerificationToken.*?value="([^"]+)"/)?.[1] ||
-    //             html.match(/"verificationToken":\s*"([^"]+)"/)?.[1];
-    //         return token;
-    //     } catch { return null; }
-    // }
-
     const runPromo = async () => {
         nodes.btnPromo.disabled = true;
         markBusy(1);
@@ -1195,8 +1192,8 @@ nodes.btnRead.onclick = runRead;
         log('⏳ 开始执行活动任务...');
         await updateData();
 
-        const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-        const appId = "SAAndroid/33.8.440724006";
+        // const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
+        // const appId = "SAAndroid/33.8.440724006";
 
         // =========================================================================
         // 🌍 区域配置 (默认锁定 'cn')
@@ -1212,11 +1209,11 @@ nodes.btnRead.onclick = runRead;
         const now = new Date();
         const todayYmd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
 
-        const generateDapiId = () => {
-            const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-            const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-            return (raw1 + raw2).slice(0, 56);
-        };
+        // const generateDapiId = () => {
+        //     const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+        //     const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
+        //     return (raw1 + raw2).slice(0, 56);
+        // };
 
         const isTrue = (val) => {
             if (typeof val === 'boolean') return val;
@@ -1285,8 +1282,8 @@ nodes.btnRead.onclick = runRead;
                     url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&version=33.8.440724006`,
                     headers: {
                         'authorization': `Bearer ${accessToken}`,
-                        'user-agent': appUa,
-                        'x-rewards-appid': appId,
+                        'user-agent': CONFIG.ua.mobile,
+                        'x-rewards-appid': CONFIG.mobileApi.appId,
                         'x-rewards-country': region
                     }
                 });
@@ -1421,9 +1418,9 @@ nodes.btnRead.onclick = runRead;
                         url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
                         headers: {
                             'content-type': 'application/json; charset=UTF-8',
-                            'user-agent': appUa,
+                            'user-agent': CONFIG.ua.mobile,
                             'authorization': `Bearer ${accessToken}`,
-                            'x-rewards-appid': appId,
+                            'x-rewards-appid': CONFIG.mobileApi.appId,
                             'x-rewards-ismobile': 'true',
                             'x-rewards-country': region,
                             'x-rewards-language': 'zh',
@@ -1659,7 +1656,7 @@ nodes.btnRead.onclick = runRead;
             } catch { }
         } catch { }
         //GM_setValue("Config.lastSignDate", "");
-        log('🌟 脚本就绪 v1.0.2');
+        log('🌟 脚本就绪 v1.0.3');
     })();
 
     setInterval(updateData, 60000);
