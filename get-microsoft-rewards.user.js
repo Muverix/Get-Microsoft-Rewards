@@ -7,8 +7,8 @@
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
 // @homepage     https://github.com/Muverix/Get-Microsoft-Rewards
 // @supportURL   https://github.com/Muverix/Get-Microsoft-Rewards/issues
-// @updateURL    https://raw.githubusercontent.com/Muverix/Get-Microsoft-Rewards/main/get-microsoft-rewards.user.js
-// @downloadURL  https://raw.githubusercontent.com/Muverix/Get-Microsoft-Rewards/main/get-microsoft-rewards.user.js
+// @updateURL    https://fastly.jsdelivr.net/gh/Muverix/Get-Microsoft-Rewards@main/get-microsoft-rewards.user.js
+// @downloadURL  https://fastly.jsdelivr.net/gh/Muverix/Get-Microsoft-Rewards@main/get-microsoft-rewards.user.js
 // @license      MIT
 // @match        https://www.bing.com/*
 // @match        https://cn.bing.com/*
