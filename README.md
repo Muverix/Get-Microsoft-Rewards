@@ -21,6 +21,6 @@
 
 ### 📜 开源致谢 / Acknowledgments
 
-* **原版项目：** 本项目基于 [QingJ](https://github.com/) 的开源作品《Get Microsoft Rewards》二次开发。
+* **原版项目：** 本项目基于 [QingJ](https://github.com/QingJ01) 的开源作品《Get Microsoft Rewards》二次开发。
 * **逻辑借鉴：** 核心签到与重构思路参考了 [liyan20001124-byte](https://github.com/) 的《微软积分商城签到（全能智能重构版）》。
 * **开源协议：** 本项目严格遵守 [MIT License](LICENSE) 协议。
