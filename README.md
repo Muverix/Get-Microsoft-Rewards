@@ -15,7 +15,7 @@
 ### ✨ 核心改进 / Key Features
 
 * **🐛 漏洞修复 (Bug Fixes):** 修复了原版在 Bing 界面下的报错问题。
-* **🏅 等级识别（Level Identification）**  兼容微软最新 **会员 (Member) / 银牌 (Silver) / 金牌 (Gold)** 体系。
+* **🏅 等级识别（Level Identification）**  兼容微软最新 会员 (Member) / 银牌 (Silver) / 金牌 (Gold) 体系。
 * **🌏 区域兼容 (Multi-Region Support):** 优化多区域与语言匹配逻辑，提升自动化执行稳定性。
 * **⚡ 智能过滤 (Card Filtering):** 重构积分卡片判定机制，自动跳过不可用或异常活动。
 * **🤖 AI 重构 (AI-Assisted Optimization):** 借助 Gemini AI 对请求层与节点监控进行性能精简。
