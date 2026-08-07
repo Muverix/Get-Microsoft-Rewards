@@ -1,15 +1,13 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.0.3
+// @version      1.0.4
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
 // @license      MIT
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
 // @homepage     https://scriptcat.org/zh-CN/script-show-page/7354
 // @supportURL   https://github.com/Muverix/Get-Microsoft-Rewards/issues
-// @updateURL    https://fastly.jsdelivr.net/gh/Muverix/Get-Microsoft-Rewards@main/get-microsoft-rewards.user.js
-// @downloadURL  https://fastly.jsdelivr.net/gh/Muverix/Get-Microsoft-Rewards@main/get-microsoft-rewards.user.js
 // @match        https://www.bing.com/*
 // @match        https://cn.bing.com/*
 // @match        https://rewards.bing.com/*
@@ -56,6 +54,7 @@
             mobile: 'Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006'
         },
         mobileApi: {appId: 'SAAndroid/33.8.440724006'},
+        read: { minDelay: 8000, maxDelay: 15000 },
         // 多个热搜API备用源
         hotApis: [
             { url: 'https://hot.baiwumm.com/api/', sources: ['weibo', 'douyin', 'baidu', 'zhihu', 'toutiao'] },
@@ -80,6 +79,7 @@
         signDone: false, signPoints: -1,
         readCur: 0, readMax: 0,
         running: false,
+        busyCount: 0, // 👈 补上此初始化
         accessToken: null,
         accessTokenExpiresAt: 0,
         updating: false,
@@ -110,18 +110,19 @@
     }
 
     function loadProgress() {
-        try {
-            const saved = GM_getValue(STORAGE_KEY);
-            if (!saved) return null;
-            const data = JSON.parse(saved);
-            // 只恢复当天的进度
-            if (data.date === getDateHyphen()) {
-                state.searchCount = data.searchCount || 0;
-                return data;
-            }
-        } catch (e) { }
-        return null;
-    }
+    try {
+        const saved = GM_getValue(STORAGE_KEY);
+        if (!saved) return null;
+        const data = JSON.parse(saved);
+        if (data.date === getDateHyphen()) {
+            state.searchCount = data.searchCount || 0;
+            return data;
+        } else {
+            resetProgress(); // 👈 跨天重置本地和内存中的计数
+        }
+    } catch (e) { }
+    return null;
+}
 
     async function withAccessTokenRequest(requestFn) {
         // 1. 获取 Token，若为空尝试强制刷新一次
@@ -422,8 +423,7 @@
                 <div class="mr-row"><span>🔍 搜索进度</span><span id="mr-pc">0/0</span></div>
                 <div class="mr-progress-bg"><div class="mr-bar" id="mr-pc-bar"></div></div>
 
-                <div class="mr-row"><span>📱 移动签到</span><span id="mr-mobile">0/0</span></div>
-                <div class="mr-progress-bg"><div class="mr-bar" id="mr-mobile-bar"></div></div>
+                <div class="mr-row"><span>📅 每日签到</span><span id="mr-sign-status" style="font-weight:600">未签到</span></div>
 
                 <div class="mr-row"><span>📖 阅读任务</span><span id="mr-read">0/0</span></div>
                 <div class="mr-progress-bg"><div class="mr-bar" id="mr-read-bar" style="background:#ff8c00"></div></div>
@@ -461,8 +461,7 @@
         points: $('#mr-points'),
         pc: $('#mr-pc'),
         pcBar: $('#mr-pc-bar'),
-        mob: $('#mr-mobile'),
-        mobBar: $('#mr-mobile-bar'),
+        signStatus: $('#mr-sign-status'),
         read: $('#mr-read'),
         readBar: $('#mr-read-bar'),
         btnSearch: $('#btn-search'),
@@ -682,9 +681,12 @@
 
             dashboard = dashData;
 
-            // 1. 解析等级与积分
+            // =========================================================================
+            // 1. 解析等级与积分（捕获 profile.attributes.level）
+            // =========================================================================
             const profile = dashData.userProfile || dashData.profile || {};
             const balance = dashData.balance;
+            const userStatus = dashData.userStatus || dashData.status || {};
 
             if (typeof balance === 'number') {
                 state.points = balance;
@@ -694,13 +696,38 @@
                 state.points = profile.availablePoints ?? profile.points ?? dashData.availablePoints ?? 0;
             }
 
-            const rawLevel = (typeof balance === 'object' && balance?.level) 
-                          || balance?.levelInfo?.activeLevel 
-                          || profile.level 
-                          || profile.levelInfo?.activeLevel 
-                          || 'Level1';
-            state.level = parseInt(String(rawLevel).replace(/\D/g, '')) || 1;
+            //直接从 profile.attributes.level 获取新版等级代号（如 newLevel3）
+            const rawLevelCandidate = 
+                profile?.attributes?.level ||
+                userStatus?.levelInfo?.activeLevel ||
+                userStatus?.level ||
+                (typeof balance === 'object' && balance?.levelInfo?.activeLevel) ||
+                (typeof balance === 'object' && balance?.level) ||
+                profile?.levelInfo?.activeLevel ||
+                profile?.level ||
+                dashData?.levelInfo?.activeLevel ||
+                dashData?.level ||
+                '';
 
+            const rawLevelStr = String(rawLevelCandidate);
+
+            // 🔍 控制台确认日志
+            //console.log('[Rewards 最终等级匹配]: 捕获到等级代号 ->', rawLevelStr);
+
+            // 微软新版体系精准匹配（newLevel3 / Level3 / Gold = 金牌）
+            if (/Gold|金牌|Level3|newLevel3/i.test(rawLevelStr) || rawLevelStr === '3') {
+                state.levelName = '🏅 金牌';
+                state.level = 3;
+            } else if (/Silver|银牌|Level2|newLevel2/i.test(rawLevelStr) || rawLevelStr === '2') {
+                state.levelName = '🥈 银牌';
+                state.level = 2;
+            } else if (/Member|Bronze|会员|铜牌|Level1|newLevel1/i.test(rawLevelStr) || rawLevelStr === '1') {
+                state.levelName = '🥉 会员';
+                state.level = 1;
+            } else {
+                state.level = parseInt(rawLevelStr.replace(/\D/g, '')) || 1;
+                state.levelName = rawLevelStr ? rawLevelStr : `Lv.${state.level}`;
+            }
             // 2. 搜索进度解析
             let searchCur = 0, searchMax = 0;
             const candidateCounters = [];
@@ -828,7 +855,7 @@
             render();
             const newStatus = `${state.level}-${state.points}-${state.searchCur}-${state.searchMax}`;
             if (state.lastStatus !== newStatus) {
-                log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts | 搜索: ${state.searchCur}/${state.searchMax}`);
+                log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts`);
                 state.lastStatus = newStatus;
             }
         } catch (e) {
@@ -845,28 +872,24 @@
     function render() {
         if (!nodes.level) return;
 
-        // 1. 等级与积分
-        nodes.level.textContent = `Lv.${state.level}`;
+        // 1. 等级与积分（优先显示金牌/银牌名称）
+        nodes.level.textContent = state.levelName || `Lv.${state.level}`;
         nodes.points.textContent = (state.points || 0).toLocaleString();
-
         // 2. 搜索进度
         const pcCur = state.searchCur ?? state.pcCur ?? 0;
         const pcMax = state.searchMax ?? state.pcMax ?? 60;
         if (nodes.pc) nodes.pc.textContent = `${pcCur}/${pcMax}`;
         if (nodes.pcBar) nodes.pcBar.style.width = pcMax ? `${(pcCur / pcMax) * 100}%` : '0%';
 
-        // 3. 签到状态（占用原 mob 节点显示已签到/未签到）
-        if (nodes.mob) {
-            nodes.mob.textContent = state.checkedIn ? '已签到' : '未签到';
-            nodes.mob.style.color = state.checkedIn ? '#107c41' : '#d83b01';
-        }
-        if (nodes.mobBar) {
-            nodes.mobBar.style.width = state.checkedIn ? '100%' : '0%';
+        // 3. 签到状态
+        if (nodes.signStatus) {
+            nodes.signStatus.textContent = state.checkedIn ? '已签到' : '未签到';
+            nodes.signStatus.style.color = state.checkedIn ? '#107c41' : '#d83b01';
         }
 
         // 4. 阅读任务
-        const readCur = state.readCur ?? 10;
-        const readMax = state.readMax ?? 10;
+        const readCur = state.readCur ?? 0;
+        const readMax = state.readMax ?? 30;
         if (nodes.read) nodes.read.textContent = `${readCur}/${readMax}`;
         if (nodes.readBar) nodes.readBar.style.width = readMax ? `${(readCur / readMax) * 100}%` : '0%';
 
@@ -961,17 +984,6 @@
 
         const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
 
-        // 生成 56 位纯 16 进制无连字符特制 ID
-        // const generateDapiId = () => {
-        //     const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-        //     const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-        //     return (raw1 + raw2).slice(0, 56);
-        // };
-
-        // 已更新为 MEIZU 20 (Android 16 / Chrome 150) UA + BingSapphire 包名后缀
-        // const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-        // const appId = "SAAndroid/33.8.440724006";
-
         // 优先获取动态 offerId，无则使用 Sapphire 默认 ID
         let offerId = "Gamification_Sapphire_DailyCheckIn";
         const allPromos = [
@@ -1059,16 +1071,6 @@
     log('⏳ 开始阅读任务...');
 
     const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
-
-    // 1. 生成 56 位无连字符特制 HEX ID
-    // const generateDapiId = () => {
-    //     const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-    //     const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-    //     return (raw1 + raw2).slice(0, 56);
-    // };
-
-    // const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-    // const appId = "SAAndroid/33.8.440724006";
     const readOfferId = 'ENUS_readarticle3_30points';
 
     try {
@@ -1109,12 +1111,9 @@
                     log(`📖 当前阅读进度 ${cur}/${max}，准备刷文章...`);
 
                     let currentArticleIdx = Math.floor(cur / step);
-
-                    // 3. 修复：去掉了 && state.running，兼容单独点击“阅读”按钮
-                    // 如果你的脚本有全局终止/停止按钮，可以用 !state.stopped 代替
                     while (cur < max) {
-                        // 如果全局点下了停止，才主动跳出
-                        if (state.stopped) break;
+                       // 方式一：改用已有的运行状态判定
+                        if (!state.running && !state.allRunning) break;
 
                         await waitWhilePaused();
                         currentArticleIdx++;
@@ -1160,7 +1159,12 @@
                         }
 
                         if (cur < max) {
-                            await sleep(typeof randomRange === 'function' ? randomRange(2500, 4500) : 2500);
+                            // 👈 优化：使用 CONFIG 中的随机时间，并打印休眠日志
+                            const readDelay = typeof randomRange === 'function' 
+                                ? randomRange(CONFIG.read.minDelay, CONFIG.read.maxDelay) 
+                                : 10000;
+                            log(`☕ 模拟人类阅读，随机等待 ${(readDelay / 1000).toFixed(1)} 秒...`);
+                            await sleep(readDelay);
                         }
                     }
 
@@ -1192,17 +1196,15 @@ nodes.btnRead.onclick = runRead;
         log('⏳ 开始执行活动任务...');
         await updateData();
 
-        // const appUa = "Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006";
-        // const appId = "SAAndroid/33.8.440724006";
-
         // =========================================================================
         // 🌍 区域配置 (默认锁定 'cn')
         // -------------------------------------------------------------------------
         // 【修改说明】：
-        // 1. 手动锁定特定区域：将 'cn' 改为相应国家代码，如 'us'(美国)、'hk'(香港) 等
-        // 2. 切换为自动全区域：修改为 (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase()
+        // 1. 默认使用 state.country 或 dashboard.userStatus.country 获取当前区域，若未获取到则回退为 'cn'。
+        // 2. 若需要强制锁定为 'cn'，可取消注释第一行并注释第二行。
         // =========================================================================
-        const customRegion = 'cn'; 
+        //const customRegion = 'cn'; //锁定cn区域
+        const customRegion = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();// 自动全区域,失败回退cn区域
         const region = customRegion.toLowerCase();
 
         // 计算今日 YYYYMMDD 日期，用于拦截提前加载的未来每日任务
@@ -1466,6 +1468,7 @@ nodes.btnRead.onclick = runRead;
     nodes.btnPromo.onclick = runPromo;
 
     // 搜索模块：重构版（适配最新接口及稳定上报）
+    // 搜索模块：重构版（动态判定合并后的总搜索进度）
     const runSearch = async () => {
         if (state.running) {
             state.running = false;
@@ -1479,6 +1482,7 @@ nodes.btnRead.onclick = runRead;
         updateAllButton();
         await waitWhilePaused();
 
+        // 搜索前先同步一次最新数据
         await updateData();
 
         // 执行单次搜索与奖励触发
@@ -1529,7 +1533,7 @@ nodes.btnRead.onclick = runRead;
                     data: `url=${encodeURIComponent(searchUrl)}&V=web`
                 }).catch(() => {});
 
-                log(`✓ ${isMobile ? '📱' : '💻'} 搜索: "${query.substring(0, 12)}..."`);
+                log(`✓ 搜索: "${query.substring(0, 12)}..."`);
             } catch (e) {
                 console.error('[Rewards] 搜索异常:', e);
                 log(`✗ 搜索失败: ${e.message}`);
@@ -1537,10 +1541,18 @@ nodes.btnRead.onclick = runRead;
         };
 
         // 精确等待函数
+        // 精确等待函数（优化日志输出频率，彻底杜绝刷屏）
         const preciseWait = async (ms) => {
             state.countdownStartTime = Date.now();
             state.countdownDuration = ms;
             let endTime = Date.now() + ms;
+            let lastLoggedSec = -1;
+
+            const shouldLog = (s) => {
+                if (s > 60) return s % 60 === 0; // 大于1分钟时，每整分钟输出一次
+                if (s > 10) return s % 10 === 0; // 10~60秒时，每10秒输出一次
+                return s === 5 || s <= 3;        // 10秒内只输出 5, 3, 2, 1
+            };
 
             while (Date.now() < endTime && state.running) {
                 if (state.manualPaused) {
@@ -1551,25 +1563,34 @@ nodes.btnRead.onclick = runRead;
                 }
                 const remaining = Math.max(0, endTime - Date.now());
                 const secs = Math.ceil(remaining / 1000);
-                if (secs % 5 === 0 || secs <= 5) {
-                    log(`⏳ 等待 ${secs} 秒...`);
+
+                if (secs !== lastLoggedSec && shouldLog(secs)) {
+                    if (secs > 60) {
+                        log(`⏳ 暂停中: 还剩 ${secs / 60} 分钟...`);
+                    } else {
+                        log(`⏳ 等待 ${secs} 秒...`);
+                    }
+                    lastLoggedSec = secs;
                 }
-                await sleep(Math.min(1000, remaining));
+                await sleep(Math.min(500, remaining));
             }
             state.countdownStartTime = 0;
             state.countdownDuration = 0;
         };
 
-        // 暂停检查函数
+        // 暂停检查函数（优化：如果已满直接跳过暂停）
         const checkPause = async () => {
             if (!CONFIG.pause.enabled) return;
+            // 👈 新增保护：如果搜索积分已经达到或超过上限，跳过暂停，交给外层退出循环
+            if (state.searchCur >= state.searchMax) return;
+
             state.searchCount++;
             saveProgress();
 
             if (state.searchCount % CONFIG.pause.interval === 0) {
                 state.isPaused = true;
                 const pauseMinutes = CONFIG.pause.duration / 60000;
-                log(`⏸️ 已完成 ${state.searchCount} 次搜索，暂停 ${pauseMinutes} 分钟...`);
+                log(`⏸️ 已完成 ${state.searchCount} 次搜索，触发防风控暂停 ${pauseMinutes} 分钟...`);
                 state.pauseEndTime = Date.now() + CONFIG.pause.duration;
                 await preciseWait(CONFIG.pause.duration);
                 state.isPaused = false;
@@ -1580,34 +1601,43 @@ nodes.btnRead.onclick = runRead;
 
         loadProgress();
 
-        // PC Search 循环 (计算还差多少分，每次按 3 分计算次数)
-        const pcNeed = Math.ceil((state.pcMax - state.pcCur) / 3);
-        if (pcNeed > 0) {
-            log(`💻 开始搜索任务，共需执行 ${pcNeed} 次`);
-            for (let i = 0; i < pcNeed && state.running; i++) {
-                await waitWhilePaused();
-                
-                // ✨ 核心改为：在每次新搜索执行前同步数据（第1次搜索已在循环前同步过，后续每次倒计时结束后、搜前同步）
-                if (i > 0) {
-                    await updateData();
-                }
+        // 动态判定搜索进度 (合并后的总搜索任务)
+        if (state.searchCur < state.searchMax) {
+            log(`💻 开始执行通用搜索，当前进度: ${state.searchCur}/${state.searchMax}`);
+            let searchIndex = 0;
 
+            while (state.searchCur < state.searchMax && state.running) {
+                await waitWhilePaused();
+
+                searchIndex++;
                 const q = await getHotQuery();
                 await doSearch(q, false);
+
+                // 👈 核心修复：每次做完立即同步预估积分 (+3分/次)
+                state.searchCur = Math.min(state.searchMax, state.searchCur + 3);
+                render();
+
+                // 👈 核心修复：如果在达标瞬间，直接退出循环，不再往下走触发暂停！
+                if (state.searchCur >= state.searchMax) {
+                    log(`🎉 搜索积分已达今日上限 (${state.searchCur}/${state.searchMax})！`);
+                    break;
+                }
+
                 await checkPause();
 
                 if (!state.running) break;
+
                 await preciseWait(randomRange(CONFIG.pc.minDelay, CONFIG.pc.maxDelay));
+                await updateData();
             }
+            log(`💻 搜索结束，共执行 ${searchIndex} 次搜索 (最终进度: ${state.searchCur}/${state.searchMax})`);
         } else {
-            log('💻 搜索任务已全部完成');
+            log('💻 今日搜索任务已全部完成');
         }
 
-        await updateData();
         state.running = false;
         nodes.btnSearch.textContent = '🔍 搜索';
         updateAllButton();
-        log('🏁 搜索任务全部结束');
         saveProgress();
     };
     nodes.btnSearch.onclick = runSearch;
@@ -1633,30 +1663,36 @@ nodes.btnRead.onclick = runRead;
     };
 
     // Init
+    // Init
     (async () => {
         try {
             loginCookie = await getCookies('https://login.live.com');
 
-            console.log(
-                '[Rewards] 登录Cookie长度:',
-                loginCookie.length
-            );
+            console.log('[Rewards] 登录Cookie长度:', loginCookie.length);
             await updateData();
-            // Try load read progress if token exists
+
+            // 尝试读取移动端阅读进度（统一使用 CONFIG.mobileApi.appId）
             try {
                 const info = await withAccessTokenRequest(token => gmRequest({
                     url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
-                    headers: { 'Authorization': `Bearer ${token}`, 'X-Rewards-AppId': 'SAAndroid/31.4.2110003555', 'X-Rewards-IsMobile': 'true' }
+                    headers: { 
+                        'Authorization': `Bearer ${token}`, 
+                        'X-Rewards-AppId': CONFIG.mobileApi.appId, 
+                        'X-Rewards-IsMobile': 'true' 
+                    }
                 }));
                 if (info) {
-                    const d = JSON.parse(info);
+                    const d = typeof info === 'string' ? JSON.parse(info) : info;
                     const p = d.response?.promotions?.find(x => x.attributes?.offerid === 'ENUS_readarticle3_30points');
-                    if (p) { state.readCur = +p.attributes.progress; state.readMax = +p.attributes.max; render(); }
+                    if (p && p.attributes) { 
+                        state.readCur = parseInt(p.attributes.progress) || 0; 
+                        state.readMax = parseInt(p.attributes.max) || 30; 
+                        render(); 
+                    }
                 }
             } catch { }
         } catch { }
-        //GM_setValue("Config.lastSignDate", "");
-        log('🌟 脚本就绪 v1.0.3');
+        log('🌟 脚本就绪 v1.0.4');
     })();
 
     setInterval(updateData, 60000);
