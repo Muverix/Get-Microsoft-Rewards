@@ -9,6 +9,8 @@
 > **A modified version of the original Microsoft Rewards script.** Enhanced and refactored with **Gemini AI** for deep bug fixes, improved multi-region compatibility, and automated card filtering.
 
 ---
+## 📸 界面预览
+<img width="350"  alt="image" src="https://github.com/user-attachments/assets/76cdc4fc-535f-41ac-9ef9-f81218c06b4e" />
 
 ### ✨ 核心改进 / Key Features
 
