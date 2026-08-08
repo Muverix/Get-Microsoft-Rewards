@@ -1694,7 +1694,7 @@ nodes.btnRead.onclick = runRead;
         } catch { }
         const hour = new Date().getHours();
 
-        if (hour >= 0 && hour < 9) {
+        if (hour >= 0 && hour < 8) {
             log('⚠️ 当前时间 00:00-08:00，Rewards 每日任务可能尚未刷新');
             log('💡 建议北京时间 08:00 后运行脚本，避免任务进度显示异常');
         }
