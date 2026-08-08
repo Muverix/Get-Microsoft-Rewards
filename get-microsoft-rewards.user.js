@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.0.4
+// @version      1.0.4.1
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
 // @license      MIT
@@ -1692,7 +1692,13 @@ nodes.btnRead.onclick = runRead;
                 }
             } catch { }
         } catch { }
-        log('🌟 脚本就绪 v1.0.4');
+        const hour = new Date().getHours();
+
+        if (hour >= 0 && hour < 9) {
+            log('⚠️ 当前时间 00:00-08:00，Rewards 每日任务可能尚未刷新');
+            log('💡 建议北京时间 08:00 后运行脚本，避免任务进度显示异常');
+        }
+        log('🌟 脚本就绪 v1.0.4.1');
     })();
 
     setInterval(updateData, 60000);
