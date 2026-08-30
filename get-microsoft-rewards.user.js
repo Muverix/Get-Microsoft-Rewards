@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.0.4.1
+// @version      1.0.5
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
 // @license      MIT
@@ -53,7 +53,7 @@
             pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0',
             mobile: 'Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006'
         },
-        mobileApi: {appId: 'SAAndroid/33.8.440724006'},
+        mobileApi: {appId: 'SAAndroid/34.0.440821006'},
         read: { minDelay: 8000, maxDelay: 15000 },
         // 多个热搜API备用源
         hotApis: [
@@ -73,6 +73,7 @@
     // ========== 状态 ==========
     let state = {
         level: 1, points: 0,
+        readRunning: false,
         pcCur: 0, pcMax: 0,
         mobileCur: 0, mobileMax: 0,
         promosTotal: 0, promosDone: 0,
@@ -287,7 +288,7 @@
                     .map(c => `${c.name}=${c.value}`)
                     .join('; ');
 
-                console.log('[Rewards] Cookie长度:', str.length, url);
+                //console.log('[Rewards] Cookie长度:', str.length, url);
                 resolve(str);
             });
 
@@ -662,7 +663,7 @@
                             url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613&_=${Date.now()}`,
                             headers: {
                                 'Authorization': `Bearer ${token}`,
-                                'X-Rewards-AppId': 'SAAndroid/31.4.2110003555',
+                                'X-Rewards-AppId': CONFIG.mobileApi.appId,
                                 'X-Rewards-IsMobile': 'true'
                             }
                         });
@@ -778,58 +779,67 @@
 
             // 4. 签到状态解析
             const lastSignDate = GM_getValue("Config.lastSignDate", "");
-            const isLocalSigned = !!lastSignDate && lastSignDate.startsWith(today);
+            const isLocalSigned = lastSignDate === today;
 
-            const dashStr = JSON.stringify(dashData || {});
             let isRemoteSigned = false;
 
-            // A. 优先从常规活动列表中查找
+            // A. 从签到活动卡片判断
             const checkInPromo = allP.find(p => {
                 if (!p || typeof p !== 'object') return false;
                 const str = JSON.stringify(p).toLowerCase();
-                if (str.includes('fosbury')) return false;
-                return str.includes('checkin') || str.includes('signin') || str.includes('streak') || str.includes('签到');
+                if (str.includes('fosbury')) return false;         
+                return (
+                    str.includes('checkin') ||
+                    str.includes('signin') ||
+                    str.includes('dailycheckin') ||
+                    str.includes('签到')
+                );
             });
 
             if (checkInPromo) {
-                const cur = Number(checkInPromo.pointProgress ?? checkInPromo.progress ?? checkInPromo.attributes?.progress ?? 0);
-                const max = Number(checkInPromo.pointProgressMax ?? checkInPromo.max ?? checkInPromo.attributes?.max ?? 0);
-                isRemoteSigned = checkInPromo.complete === true || 
-                                 checkInPromo.complete === 'true' || 
-                                 checkInPromo.attributes?.complete === 'true' || 
-                                 checkInPromo.attributes?.complete === 'True' || 
-                                 (max > 0 && cur >= max);
+                const cur = Number(
+                    checkInPromo.pointProgress ??
+                    checkInPromo.progress ??
+                    checkInPromo.attributes?.progress ??
+                    0
+                );
+
+                const max = Number(
+                   checkInPromo.pointProgressMax ??
+                   checkInPromo.max ??
+                   checkInPromo.attributes?.max ??
+                   0
+               );
+
+               const complete =
+                   checkInPromo.complete === true ||
+                   checkInPromo.complete === 'true' ||
+                   checkInPromo.attributes?.complete === true ||
+                   checkInPromo.attributes?.complete === 'true' ||
+                   checkInPromo.attributes?.complete === 'True';
+           
+              // 只有明确完成，或者存在有效进度且达到最大值，才算签到
+              if (complete || (max > 0 && cur >= max)) {
+                  isRemoteSigned = true;
+              }
             }
 
-            // B. 网页数据直接正则扫描
-            if (!isRemoteSigned && (dashStr.includes('"claimedToday":true') || dashStr.includes(`"${today}`))) {
-                isRemoteSigned = true;
-            }
-
-            // C. 若网页未扫描到，静默请求移动端 DAPI 接口扫描
-            if (!isRemoteSigned && !isLocalSigned) {
+            // B. 只接受明确的 claimedToday
+            if (!isRemoteSigned) {
                 try {
-                    const token = typeof getAccessToken === 'function' ? await getAccessToken() : null;
-                    if (token) {
-                        const dapiRes = await gmRequest({
-                            method: 'GET',
-                            url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&version=33.8.440724006&_=${Date.now()}`,
-                            headers: {
-                                'Authorization': `Bearer ${token}`,
-                                'User-Agent': CONFIG.ua.mobile,
-                                'X-Rewards-AppId': 'SAAndroid/33.8.440724006',
-                                'X-Rewards-IsMobile': 'true'
-                            }
-                        });
-                        const resStr = typeof dapiRes === 'string' ? dapiRes : JSON.stringify(dapiRes);
-                        if (resStr.includes('"claimedToday":true') || resStr.includes('"claimedToday":"true"') || resStr.includes(`"${today}`)) {
-                            isRemoteSigned = true;
-                            GM_setValue("Config.lastSignDate", today);
-                        }
+                    const claimed =
+                        dashData?.claimedToday === true ||
+                        dashData?.claimedToday === 'true' ||
+                        dashData?.userStatus?.claimedToday === true ||
+                        dashData?.userStatus?.claimedToday === 'true';
+                
+                    if (claimed) {
+                        isRemoteSigned = true;
                     }
                 } catch (e) {}
             }
 
+            // C. 本地记录只允许匹配“今天”
             state.checkedIn = isRemoteSigned || isLocalSigned;
 
             // =========================================================================
@@ -1066,6 +1076,7 @@
     // 阅读
     const runRead = async () => {
     nodes.btnRead.disabled = true;
+    state.readRunning = true;
     markBusy(1);
     await waitWhilePaused();
     log('⏳ 开始阅读任务...');
@@ -1113,7 +1124,7 @@
                     let currentArticleIdx = Math.floor(cur / step);
                     while (cur < max) {
                        // 方式一：改用已有的运行状态判定
-                        if (!state.running && !state.allRunning) break;
+                        if (!state.readRunning && !state.allRunning) break;
 
                         await waitWhilePaused();
                         currentArticleIdx++;
@@ -1168,7 +1179,11 @@
                         }
                     }
 
-                    log(`✅ 阅读任务执行完毕 (最终进度: ${state.readCur}/${max})`);
+                    if (cur >= max) {
+                        log(`✅ 阅读任务执行完毕 (最终进度: ${state.readCur}/${max})`);
+                    } else {
+                        log(`⏹️ 阅读任务已停止 (当前进度: ${state.readCur}/${max})`);
+                    }
                 }
             } else {
                 log(`⚠️ 未找到阅读任务卡片 (offerid: ${readOfferId})`);
@@ -1182,8 +1197,9 @@
         log('❌ 阅读出错: ' + e.message);
         console.error('[Rewards 阅读异常]:', e);
     } finally {
-        nodes.btnRead.disabled = false;
-        markBusy(-1);
+    state.readRunning = false;
+    nodes.btnRead.disabled = false;
+    markBusy(-1);
     }
 };
 
@@ -1539,8 +1555,6 @@ nodes.btnRead.onclick = runRead;
                 log(`✗ 搜索失败: ${e.message}`);
             }
         };
-
-        // 精确等待函数
         // 精确等待函数（优化日志输出频率，彻底杜绝刷屏）
         const preciseWait = async (ms) => {
             state.countdownStartTime = Date.now();
@@ -1551,7 +1565,7 @@ nodes.btnRead.onclick = runRead;
             const shouldLog = (s) => {
                 if (s > 60) return s % 60 === 0; // 大于1分钟时，每整分钟输出一次
                 if (s > 10) return s % 10 === 0; // 10~60秒时，每10秒输出一次
-                return s === 5 || s <= 3;        // 10秒内只输出 5, 3, 2, 1
+                return s <= 5;        // 5秒内输出
             };
 
             while (Date.now() < endTime && state.running) {
@@ -1616,19 +1630,25 @@ nodes.btnRead.onclick = runRead;
                 // 👈 核心修复：每次做完立即同步预估积分 (+3分/次)
                 state.searchCur = Math.min(state.searchMax, state.searchCur + 3);
                 render();
+                await checkPause();
+                if (!state.running) break;
+                await preciseWait(randomRange(CONFIG.pc.minDelay, CONFIG.pc.maxDelay));
 
-                // 👈 核心修复：如果在达标瞬间，直接退出循环，不再往下走触发暂停！
+                // 降低更新频率，每 5 次搜索同步一次数据，避免进度丢失
+                if (searchIndex % 5 === 0) {
+                    log(`🔄 已完成 ${searchIndex} 次搜索，同步一次数据...`);
+                    await updateData();
+                }
+
+                // 达到预估上限后，再检查服务器真实进度
                 if (state.searchCur >= state.searchMax) {
+                    if (searchIndex % 5 !== 0) {
+                        log(`🔄 搜索达到预估上限，最后同步一次数据...`);
+                        await updateData();
+                    }
                     log(`🎉 搜索积分已达今日上限 (${state.searchCur}/${state.searchMax})！`);
                     break;
                 }
-
-                await checkPause();
-
-                if (!state.running) break;
-
-                await preciseWait(randomRange(CONFIG.pc.minDelay, CONFIG.pc.maxDelay));
-                await updateData();
             }
             log(`💻 搜索结束，共执行 ${searchIndex} 次搜索 (最终进度: ${state.searchCur}/${state.searchMax})`);
         } else {
@@ -1661,8 +1681,6 @@ nodes.btnRead.onclick = runRead;
             updateAllButton();
         }
     };
-
-    // Init
     // Init
     (async () => {
         try {
@@ -1698,7 +1716,7 @@ nodes.btnRead.onclick = runRead;
             log('⚠️ 当前时间 00:00-08:00，Rewards 每日任务可能尚未刷新');
             log('💡 建议北京时间 08:00 后运行脚本，避免任务进度显示异常');
         }
-        log('🌟 脚本就绪 v1.0.4.1');
+        log('🌟 脚本就绪 v1.0.5');
     })();
 
     setInterval(updateData, 60000);
