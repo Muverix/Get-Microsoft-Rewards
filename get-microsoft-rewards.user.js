@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.0.5
+// @version      1.0.6
 // @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
 // @author       Muverix
 // @license      MIT
@@ -553,21 +553,41 @@
 
     nodes.btnAuthLink.onclick = () => window.open(AUTH_URL, '_blank');
 
-    nodes.btnAuthSave.onclick = () => {
+    nodes.btnAuthSave.onclick = async () => {
         const val = nodes.inAuth.value.trim();
-        const match = val.match(/M\.[^&]+/);
-        if (match) {
-            GM_setValue('auth_code', match[0]);
-            log('✅ 授权码已保存！');
-            nodes.boxAuth.style.display = 'none';
-        } else {
-            log('❌ 格式错误，请复制完整URL');
+        try {
+            const urlObj = new URL(val);
+            const code = urlObj.searchParams.get('code');
+            
+            if (code) {
+                GM_setValue('auth_code', code);
+                GM_setValue('refresh_token', ''); // 清空旧 token
+                log('✅ 授权码已保存，正在尝试获取 Token...');
+                nodes.boxAuth.style.display = 'none';
+                nodes.inAuth.value = '';
+                
+                // 立即强制触发 Token 获取
+                const token = await getAccessToken({ forceRefresh: true });
+                if (token) {
+                    log('🎉 授权成功！');
+                    if (typeof updateData === 'function') {
+                        await updateData(); 
+                    }
+                } else {
+                    log('❌ 授权码兑换失败，请重新获取');
+                }
+            } else {
+                log('❌ 格式错误：未在URL中找到 code 参数，请复制完整的白屏网址');
+            }
+        } catch (e) {
+            log('❌ 格式错误：请直接粘贴你复制的完整网页链接 (https://...)');
         }
     };
     updateAllButton();
 
     // 自动抓取微软 OAuth Code
     async function checkAuth() {
+        // return null;//test
         try {
             let cookie = '';
             if (typeof getCookies === 'function') {
@@ -930,19 +950,34 @@
                     state.accessTokenExpiresAt = 0;
                 }
 
-                let refreshToken = GM_getValue('refresh_token', '');
+                let refreshToken = GM_getValue('refresh_token', '');//test
                 let body = '';
 
                 if (refreshToken) {
                     body = `client_id=0000000040170455&refresh_token=${encodeURIComponent(refreshToken)}&scope=service::prod.rewardsplatform.microsoft.com::MBI_SSL&grant_type=REFRESH_TOKEN`;
                 } else {
-                    log('🔑 正在重新获取微软活动 Token...');
-                    const code = await checkAuth();
+                    log('🔑 正在获取微软活动 Token...');
+                    
+                    // 1. 尝试静默获取
+                    let code = await checkAuth();
+                    
+                    // 2. 静默获取失败，检查是否有手动保存的 auth_code
                     if (!code) {
-                        log('⚠️ 静默授权失败，请确保浏览器已登录 login.live.com 账号');
+                        const savedCode = GM_getValue('auth_code', '');
+                        if (savedCode) {
+                            code = savedCode;
+                            GM_setValue('auth_code', ''); // 授权码是一次性的，取出后立即清空
+                            log('📥 已读取手动输入的授权码');
+                        }
+                    }
+
+                    // 3. 仍然没有可用 code 时，弹出手动授权提示面板
+                    if (!code) {
+                        log('⚠️ 静默授权失败，请点击面板中的“获取授权码”链接手动授权');
                         if (nodes.boxAuth) nodes.boxAuth.style.display = 'block';
                         return null;
                     }
+
                     body = `client_id=0000000040170455&code=${encodeURIComponent(code)}&redirect_uri=https://login.live.com/oauth20_desktop.srf&grant_type=authorization_code`;
                 }
 
@@ -1174,7 +1209,7 @@
                             const readDelay = typeof randomRange === 'function' 
                                 ? randomRange(CONFIG.read.minDelay, CONFIG.read.maxDelay) 
                                 : 10000;
-                            log(`☕ 模拟人类阅读，随机等待 ${(readDelay / 1000).toFixed(1)} 秒...`);
+                            log(`☕ 随机等待 ${(readDelay / 1000).toFixed(1)} 秒...`);
                             await sleep(readDelay);
                         }
                     }
@@ -1213,7 +1248,7 @@ nodes.btnRead.onclick = runRead;
         await updateData();
 
         // =========================================================================
-        // 🌍 区域配置 (默认锁定 'cn')
+        // 🌍 区域配置
         // -------------------------------------------------------------------------
         // 【修改说明】：
         // 1. 默认使用 state.country 或 dashboard.userStatus.country 获取当前区域，若未获取到则回退为 'cn'。
@@ -1221,17 +1256,13 @@ nodes.btnRead.onclick = runRead;
         // =========================================================================
         //const customRegion = 'cn'; //锁定cn区域
         const customRegion = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();// 自动全区域,失败回退cn区域
+
+
         const region = customRegion.toLowerCase();
 
         // 计算今日 YYYYMMDD 日期，用于拦截提前加载的未来每日任务
         const now = new Date();
         const todayYmd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-
-        // const generateDapiId = () => {
-        //     const raw1 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-        //     const raw2 = (typeof uuid === 'function' ? uuid() : Math.random().toString(36)).replace(/-/g, '');
-        //     return (raw1 + raw2).slice(0, 56);
-        // };
 
         const isTrue = (val) => {
             if (typeof val === 'boolean') return val;
@@ -1462,7 +1493,7 @@ nodes.btnRead.onclick = runRead;
                 if (count < taskList.length) {
                     if (count % restInterval === 0) {
                         const restTime = randomRange(10000, 18000);
-                        log(`☕ 模拟人类阅读休顿 ${(restTime / 1000).toFixed(1)} 秒...`);
+                        log(`☕ 间隔停顿 ${(restTime / 1000).toFixed(1)} 秒...`);
                         await sleep(restTime);
                     } else {
                         const baseDelay = randomRange(4500, 8500);
@@ -1483,7 +1514,6 @@ nodes.btnRead.onclick = runRead;
 
     nodes.btnPromo.onclick = runPromo;
 
-    // 搜索模块：重构版（适配最新接口及稳定上报）
     // 搜索模块：重构版（动态判定合并后的总搜索进度）
     const runSearch = async () => {
         if (state.running) {
@@ -1560,13 +1590,14 @@ nodes.btnRead.onclick = runRead;
             state.countdownStartTime = Date.now();
             state.countdownDuration = ms;
             let endTime = Date.now() + ms;
-            let lastLoggedSec = -1;
 
-            const shouldLog = (s) => {
-                if (s > 60) return s % 60 === 0; // 大于1分钟时，每整分钟输出一次
-                if (s > 10) return s % 10 === 0; // 10~60秒时，每10秒输出一次
-                return s <= 5;        // 5秒内输出
-            };
+            const totalSecs = Math.ceil(ms / 1000);
+            if (totalSecs > 60) {
+                const mins = (totalSecs / 60).toFixed(1);
+                log(`⏳ 等待中，预计需要 ${mins} 分钟...`);
+            } else if (totalSecs > 0) {
+                log(`⏳ 等待 ${totalSecs} 秒...`);
+            }
 
             while (Date.now() < endTime && state.running) {
                 if (state.manualPaused) {
@@ -1576,18 +1607,9 @@ nodes.btnRead.onclick = runRead;
                     continue;
                 }
                 const remaining = Math.max(0, endTime - Date.now());
-                const secs = Math.ceil(remaining / 1000);
-
-                if (secs !== lastLoggedSec && shouldLog(secs)) {
-                    if (secs > 60) {
-                        log(`⏳ 暂停中: 还剩 ${secs / 60} 分钟...`);
-                    } else {
-                        log(`⏳ 等待 ${secs} 秒...`);
-                    }
-                    lastLoggedSec = secs;
-                }
                 await sleep(Math.min(500, remaining));
             }
+            
             state.countdownStartTime = 0;
             state.countdownDuration = 0;
         };
@@ -1595,7 +1617,6 @@ nodes.btnRead.onclick = runRead;
         // 暂停检查函数（优化：如果已满直接跳过暂停）
         const checkPause = async () => {
             if (!CONFIG.pause.enabled) return;
-            // 👈 新增保护：如果搜索积分已经达到或超过上限，跳过暂停，交给外层退出循环
             if (state.searchCur >= state.searchMax) return;
 
             state.searchCount++;
@@ -1689,7 +1710,6 @@ nodes.btnRead.onclick = runRead;
             console.log('[Rewards] 登录Cookie长度:', loginCookie.length);
             await updateData();
 
-            // 尝试读取移动端阅读进度（统一使用 CONFIG.mobileApi.appId）
             try {
                 const info = await withAccessTokenRequest(token => gmRequest({
                     url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
@@ -1716,7 +1736,7 @@ nodes.btnRead.onclick = runRead;
             log('⚠️ 当前时间 00:00-08:00，Rewards 每日任务可能尚未刷新');
             log('💡 建议北京时间 08:00 后运行脚本，避免任务进度显示异常');
         }
-        log('🌟 脚本就绪 v1.0.5');
+        log('🌟 脚本就绪 v1.0.6');
     })();
 
     setInterval(updateData, 60000);
