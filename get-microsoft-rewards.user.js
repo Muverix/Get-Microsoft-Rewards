@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.3.3
+// @version      1.3.4
 // @description  微软 Rewards 页面内助手：本地搜索、活动提交、每日签到、阅读、月度/周度打卡进度查看，全部在页面里一键完成。
 // @author       Muverix
 // @license      MIT
@@ -432,6 +432,12 @@
                     <span style="color:#d83b01"><span id="mr-points">0</span> pts</span>
                 </div>
 
+                <!-- 可领取积分（检测到才显示） -->
+                <div class="mr-row" id="mr-claim" style="display:none">
+                    <span>🎁 可领取积分</span>
+                    <span id="mr-claim-amt" style="font-weight:600;color:#d83b01">0</span>
+                </div>
+
                 <!-- 进度 -->
                 <div class="mr-row"><span>📅 每日签到</span><span id="mr-sign-status" style="font-weight:600">未签到</span></div>
 
@@ -483,6 +489,8 @@
         readBar: $('#mr-read-bar'),
         punch: $('#mr-punch'),
         promo: $('#mr-promo'),
+        claim: $('#mr-claim'),
+        claimAmt: $('#mr-claim-amt'),
         btnSearch: $('#btn-search'),
         btnPromo: $('#btn-promo'),
         btnSign: $('#btn-sign'),
@@ -938,6 +946,9 @@
                 log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts`);
                 state.lastStatus = newStatus;
             }
+
+            // 可领取积分检测（函数内部 5 分钟节流，避免每次刷新都多拉一个页面）
+            checkClaimablePoints();
         } catch (e) {
             console.error('updateData error:', e);
             log(`⚠️ 获取数据出错: ${e.message}`);
@@ -984,6 +995,13 @@
         // 6. 活动任务
         if (nodes.promo) {
             nodes.promo.textContent = `${state.promosDone || 0}/${state.promosTotal || 0}`;
+        }
+
+        // 7. 可领取积分（检测到才显示该行）
+        if (nodes.claim) {
+            const amt = state.claimablePoints || 0;
+            nodes.claim.style.display = amt > 0 ? 'flex' : 'none';
+            if (nodes.claimAmt) nodes.claimAmt.textContent = amt.toLocaleString();
         }
     }
 
@@ -1474,7 +1492,7 @@
                 stat.dashDone += points;
                 continue;
             }
-            tasks.push({ id, hash: item.hash || '', url: REWARDS.dash, points, type: 'dash' });
+            tasks.push({ id, title: item.title || item.name || item.description || id, hash: item.hash || '', url: REWARDS.dash, points, type: 'dash' });
         }
 
         const cards = parseEarnCards(earnHtml);
@@ -1510,7 +1528,7 @@
                 stat.earnDone += points;
                 continue;
             }
-            tasks.push({ id, hash: card.hash || '', url: REWARDS.earn, points, type: 'earn' });
+            tasks.push({ id, title: card.title || card.name || card.description || id, hash: card.hash || '', url: REWARDS.earn, points, type: 'earn' });
         }
 
         // 兜底：容器名会随改版变化（dailySetItems / dailySetPromotions / cards…），
@@ -1552,7 +1570,7 @@
                     else stat.earnDone += points;
                     continue;
                 }
-                tasks.push({ id, hash: card.hash || '', url, points, type });
+                tasks.push({ id, title: card.title || card.name || card.description || id, hash: card.hash || '', url, points, type });
             }
         };
         addGeneric(dashHtml, 'dash', REWARDS.dash);
@@ -2001,17 +2019,17 @@ nodes.btnRead.onclick = runRead;
             if (stat.noHash > 0) skipped.push(`${stat.noHash} 个无交卷标识`);
             log(`🎯 活动：待做 ${tasks.length} 个${skipped.length ? `，已跳过 ${skipped.join('、')}` : ''}`);
 
-            let okCount = 0, failCount = 0, appGained = 0;
-            if (!tasks.length) {
-                log('✅ 网页端活动已全部完成');
-            } else {
+            let okCount = 0, failCount = 0, appGained = 0, skipRest = 0;
+            if (tasks.length) {
                 let actionInfo = await getRewardsAction([dashHtml, earnHtml]);
                 let channelDown = false;
                 for (let i = 0; i < tasks.length; i++) {
-                    if (channelDown) { failCount++; continue; }
+                    if (channelDown) { skipRest++; continue; }
                     await waitWhilePaused();
                     const task = tasks[i];
+                    const taskLabel = `(${i + 1}/${tasks.length}) ${task.title || task.id}`;
                     let posted = false;
+                    let taskGained = 0;
                     let lastWebErr = null;
                     // 通道一：网页 server action（同源 fetch 优先）
                     for (let attempt = 1; attempt <= 2 && !posted; attempt++) {
@@ -2032,6 +2050,7 @@ nodes.btnRead.onclick = runRead;
                             const got = pm ? parseInt(pm[1], 10) : -1;
                             if (got > 0) {
                                 posted = true;
+                                taskGained = got;
                                 appGained += got;
                             } else if (got === 0) {
                                 const err = new Error('服务端返回 0 分（未记账）');
@@ -2058,6 +2077,7 @@ nodes.btnRead.onclick = runRead;
                             const p = Number(r?.response?.activity?.p) || 0;
                             if (r && r.code === 0 && p > 0) {
                                 posted = true;
+                                taskGained = p;
                                 appGained += p;
                             }
                         } catch { }
@@ -2068,9 +2088,11 @@ nodes.btnRead.onclick = runRead;
                         else stat.earnDone += task.points;
                         state.promosDone = stat.dashDone + stat.earnDone;
                         render();
+                        log(`✅ ${taskLabel} 完成${taskGained ? ` +${taskGained} 分` : `（${task.points} 分）`}`);
                     } else {
                         failCount++;
                         const e = lastWebErr;
+                        log(`❌ ${taskLabel} 失败${e ? `：${e.message}` : ''}`);
                         // 通道级故障（网络错误 / 5xx）只提示一次并停止重试；单条 0 分不算通道故障
                         const channelLevel = !e || (!e.taskLevel && (!e.status || e.status >= 502));
                         if (channelLevel) {
@@ -2080,8 +2102,20 @@ nodes.btnRead.onclick = runRead;
                     }
                     if (!channelDown && i < tasks.length - 1) await sleep(randomRange(2500, 5000));
                 }
-                log(`🎯 活动完成：成功 ${okCount} 个${failCount ? `，失败 ${failCount} 个` : ''}${appGained ? `，到账 ${appGained} 分` : ''}`);
             }
+
+            // 最终完整汇总：成功 / 失败 / 跳过 全部一次说清
+            const skipTotal = stat.locked + stat.levelLocked + stat.skippedQuest + stat.noHash + skipRest;
+            const skipParts = [];
+            if (stat.locked > 0) skipParts.push(`${stat.locked} 个需 App 解锁`);
+            if (stat.levelLocked > 0) skipParts.push(`${stat.levelLocked} 个等级不足`);
+            if (stat.skippedQuest > 0) skipParts.push(`${stat.skippedQuest} 个打卡任务`);
+            if (stat.noHash > 0) skipParts.push(`${stat.noHash} 个无交卷标识`);
+            if (skipRest > 0) skipParts.push(`${skipRest} 个因通道中断跳过`);
+            const donePoints = stat.dashDone + stat.earnDone;
+            log(`🏁 活动全部完成：成功 ${okCount} 个，失败 ${failCount} 个，跳过 ${skipTotal} 个`
+                + `${skipParts.length ? `（${skipParts.join('、')}）` : ''}`
+                + `，到账积分 ${donePoints}/${stat.dashTotal + stat.earnTotal}${appGained ? `（本次 +${appGained}）` : ''}`);
 
             // 3) 新版网页端不再下发每日任务数据时（只给 App），走 dapi APP 通道补做每日打卡
             const hasWebDailySet = /"dailySetItems":\[\{/.test(String(dashHtml).replace(/\\"/g, '"'));
@@ -2095,6 +2129,8 @@ nodes.btnRead.onclick = runRead;
                 GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
             } catch { }
             render();
+            // 活动做完后可能产生新的可领取积分，强制检测一次（不阻塞主流程）
+            checkClaimablePoints(null, true);
         } catch (e) {
             console.error('[Rewards] 活动任务异常:', e);
             log('❌ 活动执行出错：' + e.message);
@@ -2119,8 +2155,43 @@ nodes.btnRead.onclick = runRead;
                 GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
             } catch { }
             render();
+            // 复用刚拉到的 dashboard HTML 顺带检测可领取积分，省一次请求
+            checkClaimablePoints(dashHtml, true);
         } catch { }
     };
+
+    // 可领取积分检测：dashboard 页出现「可领取」元素时，在面板显示待领积分并每天通知一次
+    // html 传入则直接解析（省一次请求）；force=true 跳过 5 分钟节流
+    async function checkClaimablePoints(html, force = false) {
+        const now = Date.now();
+        if (!force && state.claimCheckedAt && now - state.claimCheckedAt < 5 * 60 * 1000) return;
+        state.claimCheckedAt = now;
+        try {
+            if (html == null) html = await getRewardsHtml(REWARDS.dash);
+            if (!html) return;
+            const m = String(html).match(/alt="可领取"[^>]*>[\s\S]*?(\d[\d,]*)/i);
+            const amount = m ? (parseInt(m[1].replace(/,/g, ''), 10) || 0) : 0;
+            const prev = state.claimablePoints || 0;
+            state.claimablePoints = amount;
+            render();
+            if (amount > prev) {
+                log(`🎁 发现 ${amount} 积分待领取，请打开 Rewards 页面手动领取`);
+                // 系统通知每天只弹一次，避免刷屏（沿用旧版 Config.claimNoticeDate 方案）
+                try {
+                    if (typeof GM_notification === 'function' && GM_getValue('Config.claimNoticeDate', 0) !== getTodayYmd()) {
+                        GM_setValue('Config.claimNoticeDate', getTodayYmd());
+                        GM_notification({
+                            title: 'Microsoft Rewards',
+                            text: `有 ${amount} 积分待领取，请打开 Rewards 页面手动领取`,
+                            timeout: 8000
+                        });
+                    }
+                } catch { }
+            }
+        } catch (e) {
+            console.warn('[Rewards] 可领取积分检测失败:', e.message);
+        }
+    }
 
     // 月度 / 周度 / 限时打卡：只读进度用于面板展示，不提交任何任务
     const readPunchcardProgress = async () => {
@@ -2163,7 +2234,7 @@ nodes.btnRead.onclick = runRead;
     async function runDiagnostics() {
         const out = [];
         const add = (s) => out.push(s);
-        add(`v1.3.3 level=${state.level} country=${state.country} today=${getTodayYmd()}`);
+        add(`v1.3.4 level=${state.level} country=${state.country} today=${getTodayYmd()}`);
         let dash = '', earn = '';
         try { dash = await getRewardsHtml(REWARDS.dash); } catch (e) { add('dash ERR ' + e.message); }
         try { earn = await getRewardsHtml(REWARDS.earn); } catch (e) { add('earn ERR ' + e.message); }
@@ -2449,7 +2520,7 @@ nodes.btnRead.onclick = runRead;
             log('⚠️ 当前时间 00:00-08:00，Rewards 每日任务可能尚未刷新');
             log('💡 建议北京时间 08:00 后运行脚本，避免任务进度显示异常');
         }
-        log('🌟 脚本就绪 v1.3.3');
+        log('🌟 脚本就绪 v1.3.4');
     })();
 
     setInterval(updateData, 60000);
