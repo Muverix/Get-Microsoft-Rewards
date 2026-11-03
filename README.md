@@ -10,7 +10,7 @@
 
 ---
 ## 📸 界面预览
-<img width="350"  alt="image" src="https://github.com/user-attachments/assets/76cdc4fc-535f-41ac-9ef9-f81218c06b4e" />
+<img width="350" alt="image" src="https://github.com/user-attachments/assets/f5b1f090-438d-4d32-9887-fa0ed816d6fb" />
 
 ### ✨ 核心改进 / Key Features
 
