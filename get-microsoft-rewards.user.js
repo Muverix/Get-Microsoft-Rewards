@@ -1,16 +1,15 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.0.6
-// @description  微软 Rewards 自动助手：集成本地自动搜索、每日活动与自动签到。基于原脚本二次开发，在 Gemini AI 辅助下优化多区域兼容与卡片过滤逻辑。
+// @version      1.3.3
+// @description  微软 Rewards 页面内助手：本地搜索、活动提交、每日签到、阅读、月度/周度打卡进度查看，全部在页面里一键完成。
 // @author       Muverix
 // @license      MIT
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards.png
 // @homepage     https://scriptcat.org/zh-CN/script-show-page/7354
 // @supportURL   https://github.com/Muverix/Get-Microsoft-Rewards/issues
-// @match        https://www.bing.com/*
-// @match        https://cn.bing.com/*
-// @match        https://rewards.bing.com/*
+// @match        https://*.bing.com/*
+// @match        https://*.microsoft.com/*
 // @match        https://login.live.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -37,23 +36,27 @@
  * 📜 版权声明与免责条款 (License & Disclaimer)
  * -------------------------------------------------------------------------
  * 1. 本脚本基于 QingJ 的开源项目《Get Microsoft Rewards》二次开发。
- * 2. 借助 Gemini AI，参考并融合了 liyan20001124-byte 的《微软积分商城签到（全能智能重构版）》的核心逻辑与优化思路。
+ * 2. 借助AI，参考其他相关模块进行优化。
  * 3. 本脚本遵循 MIT 开源许可协议，仅供个人学习研究与自动化测试使用。
  * 4. 作者不对使用本脚本可能产生的任何风险（如账号积分变动或风控等）承担任何法律责任，请合理使用。
  * ========================================================================= */
 
 (function () {
     'use strict';
+    // 但只在下列站点构建面板，其它页面直接返回
+    const HOST_SUPPORTED = ['rewards.bing.com', 'www.bing.com', 'cn.bing.com', 'rewards.microsoft.com', 'login.live.com'];
+    if (!HOST_SUPPORTED.includes(window.location.hostname)) return;
 
     // ========== 配置 ==========
     const CONFIG = {
         pc: { minDelay: 15000, maxDelay: 30000 },
         mobile: { minDelay: 20000, maxDelay: 35000 },
         ua: {
-            pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0',
-            mobile: 'Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/33.8.440724006'
+            pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0',
+            mobile: 'Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/34.3.441014006',
+            rewardsApp: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0 MSRewards/Desktop/1.3.0'
         },
-        mobileApi: {appId: 'SAAndroid/34.0.440821006'},
+        mobileApi: {appId: 'SAAndroid/34.3.441014006'},
         read: { minDelay: 8000, maxDelay: 15000 },
         // 多个热搜API备用源
         hotApis: [
@@ -64,10 +67,11 @@
         keywords: ["天气预报", "今日新闻", "体育赛事", "股票行情", "电影推荐", "科技资讯", "美食食谱", "旅游攻略"],
         // 暂停机制配置
         pause: {
-            enabled: true,           // 是否启用暂停机制
-            interval: 10,            // 每执行多少次搜索后暂停
-            duration: 15 * 60 * 1000 // 暂停时长（毫秒），15分钟
-        }
+        enabled: true,
+        interval: 10,
+        // 每次暂停时随机 3-10 分钟
+        duration: () => (3 + Math.random() * 7) * 60 * 1000
+    }
     };
 
     // ========== 状态 ==========
@@ -93,7 +97,12 @@
         countdownDuration: 0,     // 倒计时总时长
         manualPaused: false,      // 手动暂停
         pausePromise: null,
-        pauseResolver: null
+        pauseResolver: null,
+        // 新增：区域、月度打卡进度、领取状态
+        country: '',
+        quests: [],
+        claimRunning: false,
+        punchcardRunning: false
     };
     let dashboard = null;
     let loginCookie = '';
@@ -199,6 +208,8 @@
     async function gmRequest(options) {
         const retries = options.retries ?? 2;
         const retryDelay = options.retryDelay ?? 1000;
+        // 自定义参数不能透传给 GM_xmlhttpRequest，否则部分管理器会提示未知参数
+        const { retries: _retries, retryDelay: _retryDelay, ...reqOptions } = options;
         let attempt = 0;
 
         const shouldRetry = (err) => {
@@ -211,7 +222,7 @@
                 return await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
                         timeout: 20000,
-                        ...options,
+                        ...reqOptions,
                         onload: xhr => {
                             if (xhr.status >= 200 && xhr.status < 300) {
                                 resolve(options.returnUrl ? xhr.finalUrl : xhr.responseText);
@@ -377,6 +388,7 @@
         }
         .mr-btn:hover { background: #f0f0f0; border-color: #bbb; }
         .mr-btn:active { background: #e5e5e5; }
+        .mr-btn:disabled { opacity: .45; cursor: not-allowed; }
         .mr-full { grid-column: span 2; background: #0078d4; color: #fff; border: none; }
         .mr-full:hover { background: #006abc; }
 
@@ -421,13 +433,17 @@
                 </div>
 
                 <!-- 进度 -->
-                <div class="mr-row"><span>🔍 搜索进度</span><span id="mr-pc">0/0</span></div>
-                <div class="mr-progress-bg"><div class="mr-bar" id="mr-pc-bar"></div></div>
-
                 <div class="mr-row"><span>📅 每日签到</span><span id="mr-sign-status" style="font-weight:600">未签到</span></div>
+
+                <div class="mr-row"><span>🎯 日常活动</span><span id="mr-promo">0/0</span></div>
+
+                <div class="mr-row"><span>📋 其他任务</span><span id="mr-punch">-</span></div>
 
                 <div class="mr-row"><span>📖 阅读任务</span><span id="mr-read">0/0</span></div>
                 <div class="mr-progress-bg"><div class="mr-bar" id="mr-read-bar" style="background:#ff8c00"></div></div>
+
+                <div class="mr-row"><span>🔍 搜索任务</span><span id="mr-pc">0/0</span></div>
+                <div class="mr-progress-bg"><div class="mr-bar" id="mr-pc-bar"></div></div>
 
                 <!-- 授权 -->
                 <div id="mr-auth" style="display:none">
@@ -440,7 +456,7 @@
                 <!-- 按钮 -->
                 <div class="mr-grid">
                     <button id="btn-search" class="mr-btn">🔍 搜索</button>
-                    <button id="btn-promo" class="mr-btn">🎯 活动 <span id="val-promo">0/0</span></button>
+                    <button id="btn-promo" class="mr-btn">🎯 活动</button>
                     <button id="btn-sign" class="mr-btn">✅ 签到</button>
                     <button id="btn-read" class="mr-btn">📖 阅读</button>
                     <button id="btn-all" class="mr-btn mr-full">🚀 一键全部执行</button>
@@ -465,9 +481,10 @@
         signStatus: $('#mr-sign-status'),
         read: $('#mr-read'),
         readBar: $('#mr-read-bar'),
+        punch: $('#mr-punch'),
+        promo: $('#mr-promo'),
         btnSearch: $('#btn-search'),
         btnPromo: $('#btn-promo'),
-        valPromo: $('#val-promo'),
         btnSign: $('#btn-sign'),
         btnRead: $('#btn-read'),
         btnAll: $('#btn-all'),
@@ -501,6 +518,27 @@
         }
         nodes.logBox.scrollTop = nodes.logBox.scrollHeight;
     };
+
+    // rewards.bing.com 是 Next.js 应用，hydration 时可能重建 body 子节点，把面板一起清掉；
+    // 这里做幂等重挂，并提供菜单命令兜底（面板被隐藏/移除时也能重新调出来）
+    const ensurePanel = () => {
+        if (!document.body) return false;
+        if (document.getElementById('mr-panel')) return false;
+        document.body.appendChild(panel);
+        return true;
+    };
+    setInterval(() => {
+        if (ensurePanel()) {
+            panel.classList.remove('collapsed');
+            try { log('🔧 面板被页面移除，已重新挂载'); } catch { }
+        }
+    }, 5000);
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('🎁 显示 Rewards 面板', () => {
+            ensurePanel();
+            panel.classList.remove('collapsed');
+        });
+    }
 
     const updateAllButton = () => {
         if (!nodes.btnAll) return;
@@ -628,13 +666,6 @@
 
     // ========== 核心逻辑 (简化版引用) ==========
 
-    // 数据刷新
-    // 统一获取 Token 的逻辑
-    async function getSearchToken() {
-        if (!state.searchToken) await updateData();
-        return state.searchToken;
-    }
-
     // 数据刷新函数（修复 allP 报错 + 本地签到日期双重校验）
     async function updateData() {
     if (state.updatingPromise) return state.updatingPromise;
@@ -682,16 +713,32 @@
                             method: 'GET',
                             url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613&_=${Date.now()}`,
                             headers: {
-                                'Authorization': `Bearer ${token}`,
-                                'X-Rewards-AppId': CONFIG.mobileApi.appId,
-                                'X-Rewards-IsMobile': 'true'
+                                'content-type': 'application/json; charset=UTF-8',
+                                'user-agent': CONFIG.ua.mobile,
+                                'authorization': `Bearer ${token}`,
+                                'x-rewards-appid': CONFIG.mobileApi.appId,
+                                'x-rewards-ismobile': 'true',
+                                'x-rewards-country': 'cn',
+                                'x-rewards-language': 'zh',
+                                'x-rewards-partnerid': 'startapp',
+                                'x-rewards-flights': 'rwgobig'
                             }
                         });
                         const parsed = JSON.parse(dapiRes);
                         dashData = parsed.response?.dashboard || parsed.response || parsed;
                     }
                 } catch (e) {
-                    console.error('[Rewards] DAPI 请求错误:', e);
+                    console.error('[Rewards] DAPI 请求错误:', {
+                        status: e?.status,
+                        message: e?.message,
+                        responseText: e?.responseText,
+                        finalUrl: e?.finalUrl
+                    });
+
+                    console.error(
+                        '[Rewards] DAPI 401 Response:',
+                        e?.responseText || '(empty)'
+                    );
                 }
             }
 
@@ -708,6 +755,9 @@
             const profile = dashData.userProfile || dashData.profile || {};
             const balance = dashData.balance;
             const userStatus = dashData.userStatus || dashData.status || {};
+
+            // 账号地区：活动交卷 / dapi 上报都按它填 country，优先取服务端下发的区域
+            state.country = String(userStatus.country || profile.country || dashData.country || state.country || 'cn').toLowerCase();
 
             if (typeof balance === 'number') {
                 state.points = balance;
@@ -879,8 +929,8 @@
                 if (state.readMax === undefined) state.readMax = 30;
             }
 
-            state.promosTotal = allP.length;
-            state.promosDone = allP.filter(p => p.complete || p.attributes?.complete === 'true' || p.attributes?.complete === 'True').length;
+            // 活动进度统一用「积分」统计，只在活动任务执行时更新（见 runPromo），
+            // 这里不再用卡片张数覆盖，避免出现 8/28（张）→ 35/35（分）的单位混用
 
             render();
             const newStatus = `${state.level}-${state.points}-${state.searchCur}-${state.searchMax}`;
@@ -923,9 +973,17 @@
         if (nodes.read) nodes.read.textContent = `${readCur}/${readMax}`;
         if (nodes.readBar) nodes.readBar.style.width = readMax ? `${(readCur / readMax) * 100}%` : '0%';
 
-        // 5. 活动任务
-        if (nodes.valPromo) {
-            nodes.valPromo.textContent = `${state.promosDone || 0}/${state.promosTotal || 0}`;
+        // 5. 月度 / 周度打卡任务（只读进度）
+        if (nodes.punch) {
+            const list = state.quests || [];
+            nodes.punch.textContent = list.length
+                ? list.map(r => `${r.done || 0}/${r.total || 0}`).join('  ')
+                : '-';
+        }
+
+        // 6. 活动任务
+        if (nodes.promo) {
+            nodes.promo.textContent = `${state.promosDone || 0}/${state.promosTotal || 0}`;
         }
     }
 
@@ -994,10 +1052,13 @@
 
                 if (data.access_token) {
                     state.accessToken = data.access_token;
-                    state.accessTokenExpiresAt = Date.now() + (Number(data.expires_in) || 3600) * 1000;
+                    state.accessTokenExpiresAt =
+                        Date.now() + (Number(data.expires_in) || 3600) * 1000;
+
                     if (data.refresh_token) {
                         GM_setValue('refresh_token', data.refresh_token);
                     }
+
                     log('🔑 活动 Token 建立成功');
                     return data.access_token;
                 } else {
@@ -1020,6 +1081,669 @@
 
         return state.tokenPromise;
     }
+    // =========================================================================
+    // 🧩 Rewards 新版站点通道（Next.js Server Action）
+    // -------------------------------------------------------------------------
+    // rewards.bing.com 已迁移到 Next.js App Router：活动交卷、积分领取、月度打卡都不再走旧接口
+    // （/api/reportactivity + __RequestVerificationToken 已失效），而是 POST 到页面 URL 本身，
+    // 并带上随站点每次部署都会变化的 `next-action` 标识。因此这里做四件事：
+    //   ① 从站点 JS 分包里动态提取 action ID 并缓存（站点重新部署 404 时自动清缓存重取）；
+    //   ② 优先用页面同源 fetch 提交（Origin/Cookie 天然正确，避免被风控判为扩展来源）；
+    //   ③ 网页通道失败时退回 dapi APP 通道（type 101 + offerid，服务端即时记账且幂等）；
+    //   ④ 交卷后复核服务端状态，避免"以为做完其实没记账"。
+    // =========================================================================
+    const REWARDS = {
+        dash: 'https://rewards.bing.com/dashboard',
+        earn: 'https://rewards.bing.com/earn',
+        quest: 'https://rewards.bing.com/earn/quest/',
+        actionFallback: '70babbc81d2724f60d29a95c03b3d739cba77cea92',
+        claimFallback: '00491296f1d668ad46b65342c95cb9d72a62c1fa9d',
+        cacheKey: 'mr_action_cache',
+        questKey: 'mr_quest_state'
+    };
+
+    // 交卷 / 领取都是 POST，只有在 rewards.bing.com 页面内用同源 fetch 发出才会带上正确的
+    // Sec-Fetch / Origin，跨站请求会被站点边缘层直接 503。这里生成统一的提示，避免用户误判为脚本 bug
+    const isSameRewardsHost = () => typeof location !== 'undefined' && location.hostname === 'rewards.bing.com';
+    const crossHostHint = () => isSameRewardsHost()
+        ? ''
+        : '（交卷/领取必须在 rewards.bing.com 页面内发出，当前页面是 ' + (typeof location !== 'undefined' ? location.hostname : '?') + '，请打开 rewards.bing.com 后再点）';
+
+    const getTodayYmd = () => {
+        const d = new Date();
+        return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    };
+    // 服务端要求 timezoneOffset，东八区为 "-480"
+    const getTimezoneOffsetStr = () => String(new Date().getTimezoneOffset());
+
+    // Next.js 路由状态树：缺少它 server action 会返回 404/500
+    function getRouterStateTree(segment) {
+        const flag = 4096;
+        const tree = ['', {
+            children: ['(nav)', {
+                children: [segment, { children: ['PAGE', {}, null, null, flag] }, null, null, flag]
+            }, null, null, flag]
+        }, null, null, flag + 16];
+        return encodeURIComponent(JSON.stringify(tree));
+    }
+
+    // 同源优先：页面本身就是 rewards.bing.com 时用页面 fetch —— Origin 与 Cookie 天然正确，
+    // 不会被风控账号以"扩展来源"为由直接 500；跨站时退回 GM_xmlhttpRequest（带浏览器 Cookie）。
+    async function siteFetch(url, options = {}) {
+        const method = (options.method || 'GET').toUpperCase();
+        const headers = options.headers || {};
+        const body = options.body;
+        const sameOrigin = typeof location !== 'undefined' && location.hostname === 'rewards.bing.com';
+        if (sameOrigin && typeof fetch === 'function') {
+            try {
+                const resp = await fetch(url, { method, headers, body, credentials: 'include', redirect: 'follow' });
+                const text = await resp.text();
+                if (!resp.ok) {
+                    const err = new Error(`HTTP ${resp.status}`);
+                    err.status = resp.status;
+                    err.responseText = text;
+                    throw err;
+                }
+                return text;
+            } catch (e) {
+                // 明确的 HTTP 状态错误要交给上层判断（404 = 服务端标识过期），不能吞掉
+                if (e && e.status) throw e;
+                // 页面 fetch 被站点 CSP 或沙箱拦截时，退回 GM 请求继续
+                return gmRequest({ method, url, headers, data: body, retries: options.retries ?? 1 });
+            }
+        }
+        return gmRequest({ method, url, headers, data: body, retries: options.retries ?? 1 });
+    }
+
+    async function getRewardsHtml(url, ua) {
+        // quest 详情页需要 Rewards 客户端 UA，服务端才会解锁「需在必应 App 完成」的子项；
+        // 浏览器 fetch 不允许改写 UA，因此指定 UA 时固定走 GM 请求
+        if (ua) return gmRequest({ method: 'GET', url, headers: { 'user-agent': ua }, retries: 1 });
+        return siteFetch(url);
+    }
+
+    async function postServerAction({ url, actionId, dpl, referer, body, ua }) {
+        const segment = url.includes('/quest/') || url.includes('/earn') ? 'earn' : 'dashboard';
+        const headers = {
+            'content-type': 'text/plain;charset=UTF-8',
+            'next-action': actionId,
+            'next-router-state-tree': getRouterStateTree(segment)
+        };
+        if (referer) headers.referer = referer;
+        if (dpl) headers['x-deployment-id'] = dpl;
+        const sameOrigin = typeof location !== 'undefined' && location.hostname === 'rewards.bing.com';
+        if (!sameOrigin) {
+            // 扩展发起的请求既没有站点同源 Origin，也没有页面 fetch 的 Sec-Fetch-*，
+            // 站点边缘层会直接 503；这里把浏览器真实发出的同源头一并补齐再试
+            headers.origin = 'https://rewards.bing.com';
+            headers.referer = referer || 'https://rewards.bing.com/';
+            headers.accept = 'text/x-component';
+            headers['sec-fetch-dest'] = 'empty';
+            headers['sec-fetch-mode'] = 'cors';
+            headers['sec-fetch-site'] = 'same-origin';
+            headers['user-agent'] = ua || CONFIG.ua.pc;
+        }
+        return siteFetch(url, { method: 'POST', headers, body, retries: 0 });
+    }
+
+    function loadActionCache() {
+        try {
+            const raw = GM_getValue(REWARDS.cacheKey, '');
+            const data = raw ? JSON.parse(raw) : null;
+            return data && data.ids && data.ids.reportActivity ? data : null;
+        } catch { return null; }
+    }
+    function saveActionCache(data) {
+        try { GM_setValue(REWARDS.cacheKey, JSON.stringify(data)); } catch { }
+    }
+    function clearActionCache() {
+        try { GM_setValue(REWARDS.cacheKey, ''); } catch { }
+    }
+
+    // 从页面引用的 JS 分包中提取 server action 标识映射表。
+    // 微软每次重新部署都会换掉这些 ID，硬编码必然失效，所以按需扫描并缓存（键为构建号）。
+    async function getRewardsAction(pages) {
+        const required = ['reportActivity', 'reportClaimAllPoints'];
+        let htmls = (pages || []).filter(Boolean);
+        if (!htmls.length) {
+            const [d, e] = await Promise.all([
+                getRewardsHtml(REWARDS.dash).catch(() => ''),
+                getRewardsHtml(REWARDS.earn).catch(() => '')
+            ]);
+            htmls = [d, e].filter(Boolean);
+        }
+        const combined = htmls.join('\n');
+        const dpl = (combined.match(/[?&](?:amp;)?dpl=([A-Za-z0-9._-]+)/i) || [])[1] || '';
+        const build = dpl || (combined.match(/\/_next\/static\/([A-Za-z0-9._-]+)\//) || [])[1] || '';
+        const cached = loadActionCache();
+        // 缓存命中且构建号未变化（或页面里解析不到构建号）时直接复用，避免每次点击都扫一遍分包
+        if (cached && (!build || build === cached.build)) {
+            return { ids: cached.ids, dpl: cached.dpl || dpl };
+        }
+
+        const chunks = new Set();
+        const chunkRe = /(?:\/_next\/)?(static\/(?:chunks|immutable|media)\/[\w\-./()]+?\.js)/g;
+        let m;
+        while ((m = chunkRe.exec(combined)) !== null) chunks.add('/_next/' + m[1]);
+        // webpack 运行时清单里按需加载的动态分包（领取组件等不在首屏分包里）
+        const addDynamic = (text, set) => {
+            const re = /\b(\d{2,6}):"([a-z0-9_-]{8,})"/g;
+            let d;
+            while ((d = re.exec(text)) !== null) {
+                set.add(`/_next/static/chunks/${d[1]}-${d[2]}.js`);
+                set.add(`/_next/static/chunks/${d[1]}.${d[2]}.js`);
+            }
+        };
+        addDynamic(combined, chunks);
+        const score = p => /(dashboard|earn|page|layout|nav)/i.test(p) ? 0 : 1;
+        const queue = [...chunks].sort((a, b) => score(a) - score(b)).slice(0, 40);
+        // 历史领取分包兜底：新版清单无法枚举时，CDN 上仍保留旧分包
+        queue.push('/_next/static/chunks/4069k0g6u-2ge.js');
+
+        const hex = '[a-f0-9]{40,64}';
+        const nonNames = ['callServer', 'findSourceMapURL', 'encodeFormAction', 'default'];
+        const ids = {};
+        const scan = (js) => {
+            const regexes = [
+                new RegExp(`createServerReference\\s*\\)?\\s*\\(\\s*"(${hex})"([\\s\\S]{0,800}?)\\)`, 'g'),
+                new RegExp(`registerServerReference\\s*\\)?\\s*\\([^,]+,\\s*"(${hex})"([\\s\\S]{0,800}?)\\)`, 'g')
+            ];
+            for (const re of regexes) {
+                re.lastIndex = 0;
+                let r;
+                while ((r = re.exec(js)) !== null) {
+                    const names = [...(r[2] || '').matchAll(/"([A-Za-z_$][\w$]*)"/g)]
+                        .map(x => x[1])
+                        .filter(n => !nonNames.includes(n) && n.length > 3);
+                    const name = names[names.length - 1];
+                    if (name && !ids[name]) ids[name] = r[1];
+                }
+            }
+        };
+        const visited = new Set();
+        let fetched = 0;
+        while (queue.length && fetched < 70) {
+            const path = queue.shift();
+            if (!path || visited.has(path)) continue;
+            visited.add(path);
+            fetched++;
+            try {
+                const js = await getRewardsHtml('https://rewards.bing.com' + path);
+                if (!js || !js.includes('ServerReference')) continue;
+                scan(js);
+                if (!required.every(k => ids[k])) {
+                    const more = new Set();
+                    addDynamic(js, more);
+                    for (const p of more) if (!visited.has(p) && !queue.includes(p)) queue.push(p);
+                }
+                if (required.every(k => ids[k])) break;
+            } catch { /* 分包缺失（404）属正常情况 */ }
+        }
+        if (ids.reportActivity) {
+            saveActionCache({ build, dpl, ids, at: Date.now() });
+            log(`🧩 站点服务端标识已更新（build: ${build || '未知'}，识别 ${Object.keys(ids).length} 个动作）`);
+            return { ids, dpl };
+        }
+        log('🟡 未能从站点分包中提取服务端标识，改用缓存 / 历史标识');
+        if (cached) return { ids: cached.ids, dpl: cached.dpl || dpl };
+        return { ids: {}, dpl };
+    }
+
+    // 括号配平提取数组：不依赖 "discovery" 之类固定锚点，字段顺序变化也能解析
+    function extractArrayAfterKey(html, key) {
+        const marker = '"' + key + '":';
+        const idx = html.indexOf(marker);
+        if (idx === -1) return null;
+        const start = html.indexOf('[', idx);
+        if (start === -1) return null;
+        let depth = 0, inStr = false, esc = false;
+        for (let i = start; i < html.length; i++) {
+            const c = html[i];
+            if (inStr) {
+                if (esc) esc = false;
+                else if (c === '\\') esc = true;
+                else if (c === '"') inStr = false;
+            } else if (c === '"') inStr = true;
+            else if (c === '[') depth++;
+            else if (c === ']') {
+                depth--;
+                if (depth === 0) return html.slice(start, i + 1);
+            }
+        }
+        return null;
+    }
+
+    function normalizeDate(d) {
+        if (d == null) return null;
+        let m = String(d).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        if (m) return Number(m[3] + String(m[1]).padStart(2, '0') + String(m[2]).padStart(2, '0'));
+        m = String(d).match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+        if (m) return Number(m[1] + String(m[2]).padStart(2, '0') + String(m[3]).padStart(2, '0'));
+        const t = Date.parse(d);
+        if (!isNaN(t)) {
+            const dt = new Date(t);
+            return Number(`${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}${String(dt.getDate()).padStart(2, '0')}`);
+        }
+        return null;
+    }
+
+    // 站点数据里的布尔值偶尔会以字符串形式出现（"true"/"false"），统一按语义判断
+    const isTrueVal = (v) => v === true || String(v).toLowerCase() === 'true';
+    const isFalseVal = (v) => v === false || String(v).toLowerCase() === 'false';
+
+    // 锁定卡判定：isLocked / isUnlocked 是结构化字段，优先采信；
+    // 字段缺失时才退回 unlockCriteria 与 offerId 模式（Moreactivities_RewardsApp 只能 App 内完成）
+    function isLockedCard(card) {
+        if (!card) return false;
+        if (isFalseVal(card.isLocked) && isTrueVal(card.isUnlocked)) return false;
+        if (isTrueVal(card.isLocked) || isFalseVal(card.isUnlocked)) return true;
+        // unlockCriteria 只在明确要求「App / 安装」时才算锁定：
+        // newLevelN 这类等级门槛改用 offerId 里的 locked_levelN 精确判断，
+        // 否则会把本该能做的日常任务误判成锁定而跳过
+        const crit = typeof card.unlockCriteria === 'string' ? card.unlockCriteria : '';
+        return /app|install|mobile/i.test(crit) ||
+            /Moreactivities_RewardsApp/i.test(card.offerId || card.name || '');
+    }
+
+    // 活动资格：offerId 里常见 locked_levelN（需要对应等级会员才能完成），等级不够就别提交，
+    // 否则静默失败还会被误记为完成
+    function requiredLevelOf(id) {
+        const m = String(id || '').match(/locked_level(\d+)/i);
+        return m ? parseInt(m[1], 10) : 0;
+    }
+    function lacksLevel(id) {
+        const need = requiredLevelOf(id);
+        return need > 0 && need > (state.level || 1);
+    }
+
+    // 按 offerId 反查所在的 JSON 对象：站点容器名会变（dailySetItems / dailySetPromotions / cards…），
+    // 靠括号配平从任意容器里取出整张卡片，作为结构化解析的兜底
+    function extractCardsByOfferId(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        const out = [];
+        const seen = new Set();
+        let idx = 0;
+        while ((idx = clean.indexOf('"offerId":"', idx)) !== -1) {
+            const idStart = idx + 11;
+            const idEnd = clean.indexOf('"', idStart);
+            if (idEnd < 0) break;
+            const id = clean.slice(idStart, idEnd);
+            idx = idEnd;
+            if (!id || seen.has(id)) continue;
+            let depth = 0, start = -1;
+            for (let i = idx; i >= 0; i--) {
+                const c = clean[i];
+                if (c === '}') depth++;
+                else if (c === '{') {
+                    if (depth === 0) { start = i; break; }
+                    depth--;
+                }
+            }
+            if (start < 0) continue;
+            let d = 0, end = -1, inStr = false, esc = false;
+            for (let i = start; i < clean.length; i++) {
+                const c = clean[i];
+                if (inStr) {
+                    if (esc) esc = false;
+                    else if (c === '\\') esc = true;
+                    else if (c === '"') inStr = false;
+                } else if (c === '"') inStr = true;
+                else if (c === '{') d++;
+                else if (c === '}') { d--; if (d === 0) { end = i; break; } }
+            }
+            if (end < 0) continue;
+            try {
+                const obj = JSON.parse(clean.slice(start, end + 1));
+                if (obj && obj.offerId === id) { seen.add(id); out.push(obj); }
+            } catch { }
+        }
+        return out;
+    }
+
+    function parseDashDailySet(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        let items = [];
+        const raw = extractArrayAfterKey(clean, 'dailySetItems');
+        if (raw) {
+            try { items = JSON.parse(raw.replace(/\\"/g, '"')); } catch { items = []; }
+        }
+        if (!Array.isArray(items) || !items.length) {
+            const legacy = clean.match(/"dailySetItems":(\[.*?\]),"discovery"/);
+            if (legacy) {
+                try { items = JSON.parse(legacy[1].replace(/\\"/g, '"')); } catch { items = []; }
+            }
+        }
+        return Array.isArray(items) ? items : [];
+    }
+
+    function parseEarnCards(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        const raw = extractArrayAfterKey(clean, 'activityCards');
+        if (!raw) return [];
+        try {
+            const arr = JSON.parse(raw.replace(/\\"/g, '"'));
+            return Array.isArray(arr) ? arr : [];
+        } catch { return []; }
+    }
+
+    function parseBalance(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        const m = clean.match(/"balance":(\d+)/) || clean.match(/"availablePoints":(\d+)/);
+        return m ? parseInt(m[1], 10) : 0;
+    }
+
+    // 汇总「今日待办活动」：dashboard 的 dailySetItems（手机端每日活动）+ earn 的 activityCards（电脑端 / 周常）
+    function collectPromoTasks(dashHtml, earnHtml) {
+        const todayNum = Number(getTodayYmd());
+        const tasks = [];
+        const seen = new Set();
+        const stat = { dashDone: 0, dashTotal: 0, earnDone: 0, earnTotal: 0, locked: 0, lockedPoints: 0, levelLocked: 0, levelLockedPoints: 0, noHash: 0, skippedQuest: 0, earnParseFailed: false };
+        const dayEn = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()];
+        // 周常 / 月常卡片：过期或已完成的没必要再交卷（offerId 里带周次、月份、日期标记）
+        const skipCompleted = (id) => {
+            if (id.includes('Evergreen') && !id.includes(dayEn)) return true;
+            const dateMatch = id.match(/(20\d{6})/);
+            if (dateMatch && dateMatch[1] !== String(todayNum)) return true;
+            if (/(w[1-5]|week|month)/i.test(id)) return true;
+            if (/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{2}/i.test(id)) return true;
+            return false;
+        };
+
+        for (const item of parseDashDailySet(dashHtml)) {
+            const points = Number(item.points) || 0;
+            const id = item.offerId;
+            if (!points || !id || seen.has(id)) continue;
+            if (lacksLevel(id)) {
+                stat.levelLocked++;
+                stat.levelLockedPoints += points;
+                seen.add(id);
+                continue;
+            }
+            if (isLockedCard(item)) {
+                stat.locked++;
+                stat.lockedPoints += points;
+                seen.add(id);
+                continue;
+            }
+            // 解析不出日期时不跳过，避免误杀今日活动
+            const itemDate = normalizeDate(item.date);
+            if (itemDate !== null && itemDate !== todayNum) continue;
+            seen.add(id);
+            stat.dashTotal += points;
+            if (isTrueVal(item.isCompleted)) {
+                stat.dashDone += points;
+                continue;
+            }
+            tasks.push({ id, hash: item.hash || '', url: REWARDS.dash, points, type: 'dash' });
+        }
+
+        const cards = parseEarnCards(earnHtml);
+        if (String(earnHtml || '').replace(/\\"/g, '"').includes('"activityCards":[') && !cards.length) {
+            stat.earnParseFailed = true;
+        }
+        for (const card of cards) {
+            const points = Number(card.points) || 0;
+            const id = card.offerId || card.name || '';
+            if (!points || !id || seen.has(id)) continue;
+            // 月度 / 周度打卡是"父任务"，子项由「📋 打卡」模块逐日交卷，这里不碰
+            if (/punchcard/i.test(id)) {
+                seen.add(id);
+                stat.skippedQuest++;
+                continue;
+            }
+            if (lacksLevel(id)) {
+                stat.levelLocked++;
+                stat.levelLockedPoints += points;
+                seen.add(id);
+                continue;
+            }
+            if (isLockedCard(card)) {
+                stat.locked++;
+                stat.lockedPoints += points;
+                seen.add(id);
+                continue;
+            }
+            if (isTrueVal(card.isCompleted) && skipCompleted(id)) continue;
+            seen.add(id);
+            stat.earnTotal += points;
+            if (isTrueVal(card.isCompleted)) {
+                stat.earnDone += points;
+                continue;
+            }
+            tasks.push({ id, hash: card.hash || '', url: REWARDS.earn, points, type: 'earn' });
+        }
+
+        // 兜底：容器名会随改版变化（dailySetItems / dailySetPromotions / cards…），
+        // 按 offerId 反查整张卡片，把结构化解析没覆盖到的日常任务也纳入计划
+        const addGeneric = (html, type, url) => {
+            if (!html) return;
+            for (const card of extractCardsByOfferId(html)) {
+                const id = card.offerId;
+                const points = Number(card.points) || 0;
+                if (!points || !id || seen.has(id)) continue;
+                // Discovery_* 是首页各分区的说明卡（Achievements/Redeem/…），不是可交卷任务
+                if (/^Discovery_/i.test(id)) continue;
+                if (/punchcard/i.test(id)) continue;
+                // 可交卷活动一定带 hash；没有 hash 的多为展示型卡片，提交必然无效
+                if (!card.hash || card.hash === '$undefined') {
+                    stat.noHash++;
+                    continue;
+                }
+                if (lacksLevel(id)) {
+                    stat.levelLocked++;
+                    stat.levelLockedPoints += points;
+                    seen.add(id);
+                    continue;
+                }
+                if (isLockedCard(card)) {
+                    stat.locked++;
+                    stat.lockedPoints += points;
+                    seen.add(id);
+                    continue;
+                }
+                const d = normalizeDate(card.date);
+                if (d !== null && d !== todayNum) continue;
+                if (type === 'earn' && isTrueVal(card.isCompleted) && skipCompleted(id)) continue;
+                seen.add(id);
+                if (type === 'dash') stat.dashTotal += points;
+                else stat.earnTotal += points;
+                if (isTrueVal(card.isCompleted)) {
+                    if (type === 'dash') stat.dashDone += points;
+                    else stat.earnDone += points;
+                    continue;
+                }
+                tasks.push({ id, hash: card.hash || '', url, points, type });
+            }
+        };
+        addGeneric(dashHtml, 'dash', REWARDS.dash);
+        addGeneric(earnHtml, 'earn', REWARDS.earn);
+        return { tasks, stat };
+    }
+
+    // ---- 月度 / 周度打卡（Quest）----
+    // earn 页「任务」板块的 quest 分三类：月度、周度（每周一换新 ID）、限时活动。
+    // pcchild 型 quest 的每个子项绑定一个日历日，服务端按自然日解锁、错过即永久作废，
+    // 所以一次只推进"当前已解锁且未完成"的第一个子项；多天累计型（无子项）只能如实显示进度。
+    function parseQuestIds(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        const ids = [];
+        let m;
+        const reOffer = /"offerId":"([^"]*punchcard[^"]*)"/g;
+        while ((m = reOffer.exec(clean)) !== null) {
+            if (!ids.includes(m[1])) ids.push(m[1]);
+        }
+        // 兜底：从详情页链接里取（限时活动等 offerId 不一定带 punchcard 字样）。
+        // flight 数据里的链接会被转义成 \/earn\/quest\/...，因此斜杠前的反斜杠要允许出现
+        const reLink = /\\?\/earn\\?\/quest\\?\/([A-Za-z0-9_.%-]+)/g;
+        while ((m = reLink.exec(clean)) !== null) {
+            let id = m[1];
+            try { id = decodeURIComponent(id); } catch { }
+            if (!ids.includes(id)) ids.push(id);
+        }
+        return ids;
+    }
+
+    function parseQuestSubtasks(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        const re = /"hash":"([^"]+)"[^{}]*?"isCompleted":"?(true|false)"?\s*,\s*"isLocked":"?(true|false)"?(?:\s*,\s*"isDisabled":"?(true|false)"?)?[^{}]*?"offerId":"([A-Za-z_]*pcchild\d+_urlreward[^"]*punchcard)"/g;
+        const list = [];
+        const seen = new Set();
+        let m;
+        while ((m = re.exec(clean)) !== null) {
+            const offerId = m[5];
+            if (seen.has(offerId)) continue;
+            seen.add(offerId);
+            list.push({
+                hash: m[1],
+                isCompleted: m[2] === 'true',
+                isLocked: m[3] === 'true',
+                isDisabled: m[4] === 'true',
+                offerId
+            });
+        }
+        return list;
+    }
+
+    function parseQuestProgress(html) {
+        const clean = String(html || '').replace(/\\"/g, '"');
+        const m = clean.match(/(\d+)\s*\/\s*(\d+)\s*个任务/);
+        const day = clean.match(/\((\d+)\s*\/\s*(\d+)\s*天已完成\)/);
+        return {
+            done: m ? parseInt(m[1], 10) : 0,
+            total: m ? parseInt(m[2], 10) : 0,
+            days: day ? `${day[1]}/${day[2]}` : ''
+        };
+    }
+
+    const shortQuestName = (id) => {
+        const s = String(id || '').replace(/_?punchcard$/i, '');
+        return s.length > 28 ? '…' + s.slice(-27) : s;
+    };
+
+    function loadQuestState() {
+        try {
+            const raw = JSON.parse(GM_getValue(REWARDS.questKey, '') || 'null');
+            if (raw && raw.date === getTodayYmd() && Array.isArray(raw.list)) return raw.list;
+        } catch { }
+        return [];
+    }
+    function saveQuestState(list) {
+        state.quests = Array.isArray(list) ? list : [];
+        try {
+            GM_setValue(REWARDS.questKey, JSON.stringify({ date: getTodayYmd(), list: state.quests }));
+        } catch { }
+    }
+
+    // ---- dapi APP 通道（阅读 / 签到 / 打卡 / 活动兜底 同一条链路）----
+    async function dapiActivity(token, { type, attributes = {}, region }) {
+        const res = await gmRequest({
+            method: 'POST',
+            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
+            headers: {
+                'content-type': 'application/json; charset=UTF-8',
+                'user-agent': CONFIG.ua.mobile,
+                'authorization': `Bearer ${token}`,
+                'x-rewards-appid': CONFIG.mobileApi.appId,
+                'x-rewards-ismobile': 'true',
+                'x-rewards-country': region,
+                'x-rewards-language': 'zh',
+                'x-rewards-partnerid': 'startapp',
+                'x-rewards-flights': 'rwgobig'
+            },
+            data: JSON.stringify({
+                amount: 1,
+                country: region,
+                id: generateDapiId(),
+                type,
+                channel: 'SAAndroid',
+                attributes
+            })
+        });
+        return typeof res === 'string' ? JSON.parse(res) : res;
+    }
+
+    async function getDapiPromotions(token, region) {
+        const res = await gmRequest({
+            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
+            headers: {
+                'content-type': 'application/json; charset=UTF-8',
+                'user-agent': CONFIG.ua.mobile,
+                'authorization': `Bearer ${token}`,
+                'x-rewards-appid': CONFIG.mobileApi.appId,
+                'x-rewards-ismobile': 'true',
+                'x-rewards-country': region,
+                'x-rewards-language': 'zh',
+                'x-rewards-partnerid': 'startapp',
+                'x-rewards-flights': 'rwgobig'
+            }
+        });
+        const data = typeof res === 'string' ? JSON.parse(res) : res;
+        return data?.response?.promotions || null;
+    }
+
+    // 新版网页端不再下发 dailySetItems 时，每日打卡只在必应 APP 可见：
+    // 走 dapi 的 Gamification_DailySet_<区域>_<日期>_ChildN 项，用 type 101 + offerid 即时记账
+    async function runAppDailySet(token, region) {
+        try {
+            const promos = await getDapiPromotions(token, region);
+            if (!promos) {
+                log('🟡 未取到 APP 活动列表，跳过 APP 每日打卡');
+                return;
+            }
+            const isItem = p => /^Gamification_DailySet_/.test(p.attributes?.offerid || '');
+            const isToday = p => {
+                const m = (p.attributes?.offerid || '').match(/(20\d{6})/);
+                return !m || m[1] === getTodayYmd();
+            };
+            const isDone = p => {
+                const prog = parseInt(p.attributes?.progress, 10) || 0;
+                const max = parseInt(p.attributes?.max, 10) || 0;
+                return max > 0 && prog >= max;
+            };
+            const items = promos.filter(p => isItem(p) && isToday(p));
+            if (!items.length) {
+                log('📅 APP 通道未下发「每日打卡」项');
+                return;
+            }
+            const brief = items
+                .map(p => `${p.attributes?.title || p.attributes?.offerid || '?'} ${p.attributes?.progress ?? '?'}/${p.attributes?.max ?? '?'}`)
+                .join('，');
+            log(`📅 APP 每日打卡：${brief}`);
+            const pending = items.filter(p => !isDone(p));
+            if (!pending.length) {
+                log('✅ APP 每日打卡已全部完成');
+                return;
+            }
+            const pointsOf = list => list.filter(isDone).reduce((s, p) => s + (parseInt(p.attributes?.max, 10) || 0), 0);
+            const before = pointsOf(items);
+            for (let i = 0; i < pending.length; i++) {
+                await waitWhilePaused();
+                const attr = pending[i].attributes || {};
+                log(`📅 正在完成 APP 打卡 ${i + 1}/${pending.length}：${attr.title || attr.offerid}`);
+                try {
+                    const r = await dapiActivity(token, { type: 101, attributes: { offerid: attr.offerid || '' }, region });
+                    if (r && r.code === 0 && r.response?.activity) {
+                        log(`📅 已记账 +${Number(r.response.activity.p) || 0} 分`);
+                    }
+                } catch (e) {
+                    log(`⚠️ APP 打卡上报失败：${e.message}`);
+                }
+                if (i < pending.length - 1) await sleep(randomRange(2500, 5000));
+            }
+            // 复核：以服务端进度为准
+            await sleep(4000);
+            const after = await getDapiPromotions(token, region);
+            if (after) {
+                const gained = Math.max(0, pointsOf(after.filter(p => isItem(p) && isToday(p))) - before);
+                log(gained > 0
+                    ? `📅 APP 每日打卡完成，本次到账 ${gained} 分`
+                    : '📅 APP 打卡已上报，服务端暂未确认到账（可能已完成过）');
+            }
+        } catch (e) {
+            log('🟡 APP 每日打卡出错：' + e.message);
+        }
+    }
+
     //签到
     const runSign = async () => {
         nodes.btnSign.disabled = true;
@@ -1091,7 +1815,6 @@
                     render();
                 } else {
                     log('⚠️ 签到未成功触发，请稍后重试');
-                    console.log('[Rewards 未成功签到响应]:', data);
                 }
             } else {
                 log('❌ 签到无响应');
@@ -1190,9 +1913,6 @@
                         })).catch(() => null);
 
                         if (res) {
-                            const resData = typeof res === 'string' ? JSON.parse(res) : res;
-                            console.log(`[Rewards 阅读上报响应 ${currentArticleIdx}/${totalArticles}]:`, resData);
-
                             // 阅读成功后：进度 +step(3)，积分固定 +3
                             cur = Math.min(max, cur + step);
                             state.points = (state.points || 0) + 3;
@@ -1245,274 +1965,251 @@ nodes.btnRead.onclick = runRead;
         markBusy(1);
         await waitWhilePaused();
         log('⏳ 开始执行活动任务...');
-        await updateData();
+        try {
+            const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
+            const accessToken = await getAccessToken();
 
-        // =========================================================================
-        // 🌍 区域配置
-        // -------------------------------------------------------------------------
-        // 【修改说明】：
-        // 1. 默认使用 state.country 或 dashboard.userStatus.country 获取当前区域，若未获取到则回退为 'cn'。
-        // 2. 若需要强制锁定为 'cn'，可取消注释第一行并注释第二行。
-        // =========================================================================
-        //const customRegion = 'cn'; //锁定cn区域
-        const customRegion = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();// 自动全区域,失败回退cn区域
-
-
-        const region = customRegion.toLowerCase();
-
-        // 计算今日 YYYYMMDD 日期，用于拦截提前加载的未来每日任务
-        const now = new Date();
-        const todayYmd = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-
-        const isTrue = (val) => {
-            if (typeof val === 'boolean') return val;
-            if (typeof val === 'string') return val.trim().toLowerCase() === 'true';
-            return false;
-        };
-
-        // 1. 获取 Token
-        let token = (typeof getSearchToken === 'function') ? await getSearchToken() : null;
-        if (!token) token = state.searchToken;
-        const accessToken = await getAccessToken();
-
-        if (!token && !accessToken) {
-            log('⚠️ 未获取到活动 Token，请刷新页面重试');
-            nodes.btnPromo.disabled = false;
-            markBusy(-1);
-            return;
-        }
-
-        console.group('[Rewards 活动卡片诊断]');
-        let rawTasks = [];
-
-        // 递归挖掘任意对象中的卡片
-        const extractCardsFromAnyObject = (obj, sourceName) => {
-            if (!obj || typeof obj !== 'object') return;
-            const found = [];
-            const visited = new WeakSet();
-
-            const search = (node) => {
-                if (!node || typeof node !== 'object' || visited.has(node)) return;
-                visited.add(node);
-
-                const hasId = node.offerId || node.offerid || node.id || node.activityId;
-                const hasAttr = node.title || node.name || node.points || node.pointProgressMax !== undefined || node.destinationUrl;
-
-                if (hasId && hasAttr) {
-                    found.push(node);
-                    return;
-                }
-
-                if (Array.isArray(node)) {
-                    for (const item of node) search(item);
-                } else {
-                    for (const key of Object.keys(node)) {
-                        if (key.startsWith('jQuery') || key.startsWith('__')) continue;
-                        search(node[key]);
-                    }
-                }
-            };
-
-            search(obj);
-            if (found.length > 0) {
-                console.log(`📌 从 [${sourceName}] 挖掘出 ${found.length} 个活动卡片数据`);
-                rawTasks.push(...found);
-            }
-        };
-
-        // 渠道 1：从本地 state / dashboard 提取
-        if (typeof state !== 'undefined' && state.dashboard) extractCardsFromAnyObject(state.dashboard, "state.dashboard");
-        if (typeof dashboard !== 'undefined' && dashboard) extractCardsFromAnyObject(dashboard, "全局 dashboard");
-
-        // 渠道 2：通过 DAPI 移动端接口拉取
-        if (accessToken) {
+            // 1) 新版站点的活动数据就在页面 HTML 的 flight 数据里，直接取 dashboard + earn
+            let dashHtml = '', earnHtml = '';
             try {
-                const dapiRes = await gmRequest({
-                    url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&version=33.8.440724006`,
-                    headers: {
-                        'authorization': `Bearer ${accessToken}`,
-                        'user-agent': CONFIG.ua.mobile,
-                        'x-rewards-appid': CONFIG.mobileApi.appId,
-                        'x-rewards-country': region
-                    }
-                });
-                const dapiData = typeof dapiRes === 'string' ? JSON.parse(dapiRes) : dapiRes;
-                if (dapiData?.response) {
-                    extractCardsFromAnyObject(dapiData.response, "DAPI 接口 response");
-                }
+                dashHtml = await getRewardsHtml(REWARDS.dash);
             } catch (e) {
-                console.warn('⚠️ DAPI 请求失败:', e.message);
+                log('⚠️ dashboard 页面获取失败：' + e.message);
             }
-        }
-
-        // 2. 去重与精细化多重校验
-        const seenIds = new Set();
-        const taskList = [];
-
-        for (const p of rawTasks) {
-            if (!p) continue;
-
-            const id = String(p.offerId || p.id || p.offerid || '');
-            const title = p.title || p.name || p.description || '未命名活动';
-            const progress = Number(p.pointProgress || 0);
-            const max = Number(p.pointProgressMax || p.max || 0);
-
-            if (!id || seenIds.has(id)) continue;
-
-            // 规则 A：排除系统通知、漫游提示、每日签到卡片（需单独签到接口）及异常进度卡片
-            const idUpper = id.toUpperCase();
-            if (idUpper.includes('NOTIFICATION') || 
-                idUpper.includes('ROAMING') || 
-                idUpper.includes('CHECKIN') || 
-                idUpper.includes('CHECK_IN') || 
-                max > 100000) {
-                console.log(`❌ [跳过-非通用任务/签到卡片] ${title} (id: ${id})`);
-                continue;
-            }
-
-            // 规则 B：日期精准拦截（对于 DailySet 任务，拦截未到期的未来任务）
-            const dateMatch = id.match(/20\d{6}/);
-            if (dateMatch) {
-                const cardDate = dateMatch[0];
-                if (cardDate > todayYmd) {
-                    console.log(`❌ [跳过-未来未到期任务] ${title} (id: ${id}, 日期: ${cardDate})`);
-                    continue;
-                }
-            }
-
-            // 规则 C：区域限制隔离（锁定 CN 时，跳过含有外区编码如 ENUS, US, JP 的任务）
-            if (region === 'cn') {
-                const nonCnRegex = /_(ENUS|US|UK|JP|DE|FR|CA|AU)_/i;
-                if (nonCnRegex.test(id)) {
-                    console.log(`❌ [跳过-外区任务] ${title} (id: ${id})`);
-                    continue;
-                }
-            }
-
-            // 规则 D：完成度及锁定校验
-            const isCompleted = isTrue(p.complete) ||
-                                isTrue(p.completed) ||
-                                isTrue(p.isCompleted) ||
-                                isTrue(p.attributes?.complete) ||
-                                p.state === 'CLAIMED' ||
-                                (max > 0 && progress >= max);
-
-            if (isCompleted) {
-                console.log(`❌ [跳过-已完成] ${title} (id: ${id}, 进度: ${progress}/${max})`);
-                continue;
-            }
-
-            if (p.priority <= -2 || p.exclusiveLockedFeatureStatus === 'locked') {
-                console.log(`❌ [跳过-已锁定] ${title} (id: ${id})`);
-                continue;
-            }
-
-            seenIds.add(id);
-            taskList.push(p);
-            console.log(`✅ [待执行活动] ${title} (id: ${id}, 进度: ${progress}/${max})`);
-        }
-
-        console.groupEnd();
-
-        if (taskList.length === 0) {
-            log('✅ 所有活动已完成！');
-            nodes.btnPromo.disabled = false;
-            markBusy(-1);
-            return;
-        }
-
-        log(`🎯 准备上报 ${taskList.length} 个未完成活动 (当前区域: ${region.toUpperCase()})`);
-
-        let count = 0;
-        const restInterval = randomRange(3, 5);
-
-        for (const p of taskList) {
-            await waitWhilePaused();
             try {
-                const title = p.title || p.name || p.description || '活动任务';
-                const offerId = p.offerId || p.id || p.offerid;
-                const hash = p.hash || p.activityId || p.attributes?.hash || '1';
+                earnHtml = await getRewardsHtml(REWARDS.earn);
+            } catch (e) {
+                log('⚠️ earn 页面获取失败：' + e.message);
+            }
+            if (!dashHtml && !earnHtml) {
+                log('❌ 活动页面全部获取失败，请确认已登录 rewards.bing.com 后重试');
+                return;
+            }
 
-                log(`▶️ (${count + 1}/${taskList.length}) 执行: ${title}`);
+            // 2) 解析今日未完成活动（自动排除 App 锁定卡、非今日任务与打卡父任务）
+            const { tasks, stat } = collectPromoTasks(dashHtml, earnHtml);
+            state.promosDone = stat.dashDone + stat.earnDone;
+            state.promosTotal = stat.dashTotal + stat.earnTotal;
+            render();
+            await readPunchcardProgress();
+            if (stat.earnParseFailed) log('🟡 earn 页面活动结构异常，未能解析活动卡片');
+            // 一行结论：跳过原因合并，避免逐条刷屏
+            const skipped = [];
+            if (stat.locked > 0) skipped.push(`${stat.locked} 个需 App 解锁`);
+            if (stat.levelLocked > 0) skipped.push(`${stat.levelLocked} 个等级不足`);
+            if (stat.skippedQuest > 0) skipped.push(`${stat.skippedQuest} 个打卡任务`);
+            if (stat.noHash > 0) skipped.push(`${stat.noHash} 个无交卷标识`);
+            log(`🎯 活动：待做 ${tasks.length} 个${skipped.length ? `，已跳过 ${skipped.join('、')}` : ''}`);
 
-                // 通道 1：Web 端标准 reportactivity
-                if (token) {
-                    const formData = new URLSearchParams({
-                        id: offerId,
-                        hash: hash,
-                        timeZone: '480',
-                        activityAmount: '1',
-                        dbs: '0',
-                        form: '',
-                        type: '',
-                        __RequestVerificationToken: token
-                    });
-
-                    await gmRequest({
-                        method: 'POST',
-                        url: 'https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest',
-                        headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                            'X-Requested-With': 'XMLHttpRequest',
-                            'Referer': 'https://rewards.bing.com/'
-                        },
-                        data: formData.toString()
-                    }).catch(() => null);
-                }
-
-                // 通道 2：DAPI 移动端 101 上报
-                if (accessToken) {
-                    await gmRequest({
-                        method: 'POST',
-                        url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
-                        headers: {
-                            'content-type': 'application/json; charset=UTF-8',
-                            'user-agent': CONFIG.ua.mobile,
-                            'authorization': `Bearer ${accessToken}`,
-                            'x-rewards-appid': CONFIG.mobileApi.appId,
-                            'x-rewards-ismobile': 'true',
-                            'x-rewards-country': region,
-                            'x-rewards-language': 'zh',
-                            'x-rewards-partnerid': 'startapp',
-                            'x-rewards-flights': 'rwgobig'
-                        },
-                        data: JSON.stringify({
-                            amount: 1,
-                            country: region,
-                            id: generateDapiId(),
-                            type: 101,
-                            channel: 'SAAndroid',
-                            attributes: { offerid: offerId }
-                        })
-                    }).catch(() => null);
-                }
-
-                count++;
-
-                // 防封随机延迟
-                if (count < taskList.length) {
-                    if (count % restInterval === 0) {
-                        const restTime = randomRange(10000, 18000);
-                        log(`☕ 间隔停顿 ${(restTime / 1000).toFixed(1)} 秒...`);
-                        await sleep(restTime);
+            let okCount = 0, failCount = 0, appGained = 0;
+            if (!tasks.length) {
+                log('✅ 网页端活动已全部完成');
+            } else {
+                let actionInfo = await getRewardsAction([dashHtml, earnHtml]);
+                let channelDown = false;
+                for (let i = 0; i < tasks.length; i++) {
+                    if (channelDown) { failCount++; continue; }
+                    await waitWhilePaused();
+                    const task = tasks[i];
+                    let posted = false;
+                    let lastWebErr = null;
+                    // 通道一：网页 server action（同源 fetch 优先）
+                    for (let attempt = 1; attempt <= 2 && !posted; attempt++) {
+                        try {
+                            const respText = await postServerAction({
+                                url: task.url,
+                                actionId: actionInfo.ids.reportActivity || REWARDS.actionFallback,
+                                dpl: actionInfo.dpl,
+                                referer: task.url,
+                                body: JSON.stringify([task.hash, 11, {
+                                    offerid: task.id,
+                                    isPromotional: '$undefined',
+                                    timezoneOffset: getTimezoneOffsetStr()
+                                }])
+                            });
+                            // 服务端回执里带 "p":N 时以它为准：0 分 = 没记账（多半资格不足），不能算成功
+                            const pm = String(respText || '').match(/"p":\s*(\d+)/);
+                            const got = pm ? parseInt(pm[1], 10) : -1;
+                            if (got > 0) {
+                                posted = true;
+                                appGained += got;
+                            } else if (got === 0) {
+                                const err = new Error('服务端返回 0 分（未记账）');
+                                err.taskLevel = true;
+                                lastWebErr = err;
+                            } else {
+                                posted = true;
+                            }
+                        } catch (e) {
+                            lastWebErr = e;
+                            if (e.status === 404) {
+                                // 站点重新部署换了 action 标识：清缓存重取后再试一次
+                                clearActionCache();
+                                actionInfo = await getRewardsAction([dashHtml, earnHtml]);
+                                continue;
+                            }
+                            if (attempt < 2) await sleep(randomRange(1800, 3500));
+                        }
+                    }
+                    // 通道二：dapi APP 通道兜底（幂等、即时记账、不校验 Origin）
+                    if (!posted && accessToken) {
+                        try {
+                            const r = await dapiActivity(accessToken, { type: 101, attributes: { offerid: task.id }, region });
+                            const p = Number(r?.response?.activity?.p) || 0;
+                            if (r && r.code === 0 && p > 0) {
+                                posted = true;
+                                appGained += p;
+                            }
+                        } catch { }
+                    }
+                    if (posted) {
+                        okCount++;
+                        if (task.type === 'dash') stat.dashDone += task.points;
+                        else stat.earnDone += task.points;
+                        state.promosDone = stat.dashDone + stat.earnDone;
+                        render();
                     } else {
-                        const baseDelay = randomRange(4500, 8500);
-                        log(`⏳ 间隔等待 ${(baseDelay / 1000).toFixed(1)} 秒...`);
-                        await sleep(baseDelay);
+                        failCount++;
+                        const e = lastWebErr;
+                        // 通道级故障（网络错误 / 5xx）只提示一次并停止重试；单条 0 分不算通道故障
+                        const channelLevel = !e || (!e.taskLevel && (!e.status || e.status >= 502));
+                        if (channelLevel) {
+                            channelDown = true;
+                            log(`🟡 交卷通道不可用（${e ? e.message : '网络错误'}），本次跳过剩余活动${crossHostHint()}`);
+                        }
                     }
+                    if (!channelDown && i < tasks.length - 1) await sleep(randomRange(2500, 5000));
                 }
-            } catch (e) {
-                log(`❌ 活动执行失败: ${e.message}`);
+                log(`🎯 活动完成：成功 ${okCount} 个${failCount ? `，失败 ${failCount} 个` : ''}${appGained ? `，到账 ${appGained} 分` : ''}`);
             }
-        }
 
-        log(`✅ 活动全部完成，成功提交 ${count} 个活动`);
-        await updateData();
-        nodes.btnPromo.disabled = false;
-        markBusy(-1);
+            // 3) 新版网页端不再下发每日任务数据时（只给 App），走 dapi APP 通道补做每日打卡
+            const hasWebDailySet = /"dailySetItems":\[\{/.test(String(dashHtml).replace(/\\"/g, '"'));
+            if (!hasWebDailySet && accessToken) await runAppDailySet(accessToken, region);
+
+            await updateData();
+            // 活动进度统一按积分统计；持久化到当天，刷新页面后数字保持一致
+            state.promosDone = stat.dashDone + stat.earnDone;
+            state.promosTotal = stat.dashTotal + stat.earnTotal;
+            try {
+                GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
+            } catch { }
+            render();
+        } catch (e) {
+            console.error('[Rewards] 活动任务异常:', e);
+            log('❌ 活动执行出错：' + e.message);
+        } finally {
+            nodes.btnPromo.disabled = false;
+            markBusy(-1);
+        }
+    };
+
+    // 主动计算一次活动积分（面板初始化时用，避免必须点「活动」才有数字）
+    const refreshPromoScore = async () => {
+        try {
+            const [dashHtml, earnHtml] = await Promise.all([
+                getRewardsHtml(REWARDS.dash).catch(() => ''),
+                getRewardsHtml(REWARDS.earn).catch(() => '')
+            ]);
+            if (!dashHtml && !earnHtml) return;
+            const { stat } = collectPromoTasks(dashHtml, earnHtml);
+            state.promosDone = stat.dashDone + stat.earnDone;
+            state.promosTotal = stat.dashTotal + stat.earnTotal;
+            try {
+                GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
+            } catch { }
+            render();
+        } catch { }
+    };
+
+    // 月度 / 周度 / 限时打卡：只读进度用于面板展示，不提交任何任务
+    const readPunchcardProgress = async () => {
+        if (state.punchcardRunning) return;
+        state.punchcardRunning = true;
+        try {
+            const earnHtml = await getRewardsHtml(REWARDS.earn).catch(() => '');
+            if (!earnHtml) return;
+            const questIds = parseQuestIds(earnHtml);
+            if (!questIds.length) {
+                saveQuestState([]);
+                render();
+                return;
+            }
+            const results = [];
+            for (const questId of questIds) {
+                const questUrl = REWARDS.quest + encodeURIComponent(questId);
+                const html = await getRewardsHtml(questUrl, CONFIG.ua.rewardsApp).catch(() => '');
+                if (!html) {
+                    results.push({ id: questId, done: 0, total: 0 });
+                    continue;
+                }
+                const subs = parseQuestSubtasks(html);
+                const prog = parseQuestProgress(html);
+                const total = prog.total || subs.length;
+                const done = prog.done || subs.filter(s => s.isCompleted).length;
+                results.push({ id: questId, done, total, complete: total > 0 && done >= total, days: prog.days });
+            }
+            saveQuestState(results);
+            render();
+        } catch { } finally {
+            state.punchcardRunning = false;
+        }
     };
 
     nodes.btnPromo.onclick = runPromo;
+
+    // ===== 诊断：把页面结构、卡片资格、打卡子项、action 标识压成几十行输出到控制台 =====
+    // 用法：脚本管理器菜单 →「🔍 导出 Rewards 诊断日志」，然后 F12 控制台搜 MR-DIAG 复制发回
+    async function runDiagnostics() {
+        const out = [];
+        const add = (s) => out.push(s);
+        add(`v1.3.3 level=${state.level} country=${state.country} today=${getTodayYmd()}`);
+        let dash = '', earn = '';
+        try { dash = await getRewardsHtml(REWARDS.dash); } catch (e) { add('dash ERR ' + e.message); }
+        try { earn = await getRewardsHtml(REWARDS.earn); } catch (e) { add('earn ERR ' + e.message); }
+        const keys = ['dailySetItems', 'dailySetPromotions', 'morePromotions', 'activities', 'activityCards', 'pointClaim'];
+        const cnt = (h, k) => (String(h || '').match(new RegExp('"' + k + '":', 'g')) || []).length;
+        add('dash len=' + dash.length + ' ' + keys.map(k => k + '=' + cnt(dash, k)).join(' '));
+        add('earn len=' + earn.length + ' ' + keys.map(k => k + '=' + cnt(earn, k)).join(' '));
+        try {
+            const info = await getRewardsAction([dash, earn]);
+            add('actions=' + Object.keys(info.ids).join(',') + ' dpl=' + (info.dpl || '-'));
+        } catch (e) { add('actions ERR ' + e.message); }
+        const dumpCards = (h, tag) => {
+            const cards = extractCardsByOfferId(h);
+            add(tag + ' cards=' + cards.length);
+            for (const c of cards) {
+                if (c.points == null || !c.offerId) continue;
+                add(`  ${tag} ${c.offerId} p=${c.points} done=${c.isCompleted} lock=${c.isLocked} unl=${c.isUnlocked} lvl=${requiredLevelOf(c.offerId)} date=${c.date || '-'} hash=${c.hash ? 'y' : 'n'} crit=${typeof c.unlockCriteria === 'string' ? c.unlockCriteria.slice(0, 24) : '-'}`);
+            }
+        };
+        dumpCards(dash, 'D');
+        dumpCards(earn, 'E');
+        const questIds = parseQuestIds(earn);
+        add('quests=' + questIds.length + ' ' + questIds.join(' '));
+        for (const id of questIds.slice(0, 4)) {
+            const qt = REWARDS.quest + encodeURIComponent(id);
+            try {
+                const html = await getRewardsHtml(qt, CONFIG.ua.rewardsApp);
+                const clean = String(html).replace(/\\"/g, '"');
+                const p = parseQuestProgress(html);
+                const subs = parseQuestSubtasks(clean);
+                add(`  Q ${shortQuestName(id)} len=${html.length} prog=${p.done}/${p.total} days=${p.days || '-'} subs=${subs.length}`);
+                for (const s of subs) add(`    S ${s.offerId} done=${s.isCompleted} lock=${s.isLocked} dis=${s.isDisabled} hash=${s.hash ? 'y' : 'n'}`);
+                if (!subs.length) {
+                    const i = clean.indexOf('个任务');
+                    if (i > -1) add('    CTX ' + clean.slice(Math.max(0, i - 140), i + 30).replace(/\s+/g, ' '));
+                }
+            } catch (e) { add(`  Q ${shortQuestName(id)} ERR ${e.message}`); }
+        }
+        const ci = (dash + earn).indexOf('"pointClaim"');
+        add('claim=' + (ci > -1 ? (dash + earn).slice(ci, ci + 60).replace(/\s+/g, ' ') : 'notfound'));
+        for (const line of out) console.log('[MR-DIAG] ' + line);
+        log(`🔍 诊断完成：${out.length} 行已输出到控制台（F12 → Console → 搜 MR-DIAG）`);
+    }
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('🔍 导出 Rewards 诊断日志', () => { runDiagnostics(); });
+    }
 
     // 搜索模块：重构版（动态判定合并后的总搜索进度）
     const runSearch = async () => {
@@ -1624,10 +2321,11 @@ nodes.btnRead.onclick = runRead;
 
             if (state.searchCount % CONFIG.pause.interval === 0) {
                 state.isPaused = true;
-                const pauseMinutes = CONFIG.pause.duration / 60000;
+                const pauseMs = CONFIG.pause.duration();
+                const pauseMinutes = Math.round(pauseMs / 60000);
                 log(`⏸️ 已完成 ${state.searchCount} 次搜索，触发防风控暂停 ${pauseMinutes} 分钟...`);
-                state.pauseEndTime = Date.now() + CONFIG.pause.duration;
-                await preciseWait(CONFIG.pause.duration);
+                state.pauseEndTime = Date.now() + pauseMs;
+                await preciseWait(pauseMs);
                 state.isPaused = false;
                 state.pauseEndTime = 0;
                 log(`▶️ 暂停结束，继续搜索...`);
@@ -1707,8 +2405,23 @@ nodes.btnRead.onclick = runRead;
         try {
             loginCookie = await getCookies('https://login.live.com');
 
-            console.log('[Rewards] 登录Cookie长度:', loginCookie.length);
+            // 回显今日已检查过的打卡进度，避免刷新页面后进度栏空白
+            state.quests = loadQuestState();
+            // 活动进度同样回显当天缓存（单位：积分）
+            try {
+                const ps = JSON.parse(GM_getValue('mr_promo_score', '') || 'null');
+                if (ps && ps.date === getTodayYmd()) {
+                    state.promosDone = ps.done || 0;
+                    state.promosTotal = ps.total || 0;
+                }
+            } catch { }
+            render();
             await updateData();
+            // 当天还没有统计结果时，初始化阶段主动算一次，面板不再显示 0/0
+            await Promise.all([
+                state.promosTotal ? null : refreshPromoScore(),
+                readPunchcardProgress()
+            ]);
 
             try {
                 const info = await withAccessTokenRequest(token => gmRequest({
@@ -1736,7 +2449,7 @@ nodes.btnRead.onclick = runRead;
             log('⚠️ 当前时间 00:00-08:00，Rewards 每日任务可能尚未刷新');
             log('💡 建议北京时间 08:00 后运行脚本，避免任务进度显示异常');
         }
-        log('🌟 脚本就绪 v1.0.6');
+        log('🌟 脚本就绪 v1.3.3');
     })();
 
     setInterval(updateData, 60000);
