@@ -1,32 +1,226 @@
 # Get Microsoft Rewards (修复/增强版)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.3.3-blue.svg)](#)
-[![Platform](https://img.shields.io/badge/Platform-Tampermonkey%20%7C%20ScriptCat-green.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](#)
+[![Platform](https://img.shields.io/badge/Platform-Tampermonkey%20%7C%20ScriptCat%20%7C%20Violentmonkey-green.svg)](#)
 
-微软 Rewards 自动化助手。本项目基于原版项目进行二次开发，并在 **AI** 辅助下，对核心逻辑进行了深度的 Bug 修复、多区域兼容提升与性能重构。
+微软 Rewards 页面内自动化助手：**搜索积分、每日签到、阅读任务、活动交卷、月度/周度打卡查看**，全部在悬浮面板里一键完成。
 
-> **A modified version of the original Microsoft Rewards script.** Enhanced and refactored with **Gemini AI** for deep bug fixes, improved multi-region compatibility, and automated card filtering.
+本项目基于原版项目进行二次开发，在 AI 辅助下对核心链路做了深度修复与重构：新版 Next.js 站点 server action 交卷、dapi APP 通道兜底、真实上限容错、可领取积分提示等。
+
+> **A modified version of the original Microsoft Rewards script.** Refactored with AI assistance for the new Next.js rewards site, dual-channel task submission, and more reliable progress tracking.
 
 ---
+
 ## 📸 界面预览
+
 <img width="350" alt="image" src="https://github.com/user-attachments/assets/f5b1f090-438d-4d32-9887-fa0ed816d6fb" />
 
-### ✨ 核心改进 / Key Features
+---
 
-* **🐛 漏洞修复 (Bug Fixes):** 修复了原版在 Bing 界面下的报错问题。
-* **🏅 等级识别（Level Identification）**  兼容微软最新 会员 (Member) / 银牌 (Silver) / 金牌 (Gold) 体系。
-* **🌏 区域兼容 (Multi-Region Support):** 优化多区域与语言匹配逻辑，提升自动化执行稳定性。
-* **⚡ 智能过滤 (Card Filtering):** 重构积分卡片判定机制，自动跳过不可用或异常活动。
-* **🤖 AI 重构 (AI-Assisted Optimization):** 借助 AI 对请求层与节点监控进行性能精简。
+## ✨ 核心功能
+
+| 模块 | 说明 |
+| --- | --- |
+| 🎯 日常活动 | 逐条提示每个任务结果，最后给一条完整汇总（成功/失败/跳过及原因） |
+| 🔍 搜索任务 | 自动搜索攒积分，热搜词多源随机；按真实上限自动停止，预估偏差时自动补搜（最多 2 轮容错） |
+| 📖 阅读任务 | 按每篇 3 分推进阅读进度，自动算出剩余篇数并逐步提交 |
+| 📅 每日签到 | 走 APP 移动端通道签到，服务器状态优先，本地记录兜底 |
+| 📋 其他任务 | 月度 / 周度 / 限时打卡，只读展示进度，不误提交子项；今天可推进的标红 |
+| 🎁 可领取积分 | 检测 dashboard 待领取积分并在面板提示，每天最多通知一次 |
+
+其他改进：
+
+- **🏅 等级识别**：兼容微软新版 会员(Member) / 银牌(Silver) / 金牌(Gold) 体系
+- **🌏 多区域兼容**：自动读取账号区域，活动卡片按区域隔离过滤
+- **⚡ 智能过滤**：自动跳过已锁定、需 App 解锁、等级不足、未来日期、打卡父任务等无效卡片
+- **🛡️ 防封策略**：随机延迟、定期长暂停、手动暂停/继续
 
 ---
 
-### 📜 开源致谢 / Acknowledgments
+## 🚀 安装
 
-* **原版项目：** 本项目基于 [QingJ](https://github.com/QingJ01) 的开源作品《Get Microsoft Rewards》二次开发。
-* **逻辑借鉴：** 本插件的功能参考了其他相关插件，谨此一并致谢。
-* **开源协议：** 本项目严格遵守 [MIT License](LICENSE) 协议。
+### 1. 安装脚本管理器
+
+任选其一：
+
+- [Tampermonkey](https://www.tampermonkey.net/)（油猴，通用）
+- [ScriptCat](https://scriptcat.org/)（脚本猫，国内访问快）
+- [Violentmonkey](https://violentmonkey.github.io/)
+
+### 2. 安装脚本
+
+- **脚本猫商店**：[scriptcat.org 脚本页](https://scriptcat.org/zh-CN/script-show-page/7354)
+- 或直接新建脚本，把 `get-microsoft-rewards.user.js` 全部内容粘贴进去保存
+
+### 3. 打开 Rewards 页面
+
+访问以下任一站点，右下角会出现悬浮面板（默认折叠）：
+
+```
+https://www.bing.com
+https://cn.bing.com
+```
+
+> ⚠️ **重要**：活动交卷、积分领取必须在 `rewards.bing.com` 页面内执行（站点会校验同源 Origin），其他页面点按钮会提示"请打开 rewards.bing.com 后再点"。
+
+---
+
+## 📖 使用教程
+
+### 第一步：确认面板出现
+
+刷新页面后，右下角出现「🎁」悬浮按钮，点击即可展开。
+
+- 面板被页面刷新清掉时会自动重挂（每 5 秒检查一次）
+- 完全找不到时：脚本管理器图标 → 菜单 → **「🎁 显示 Rewards 面板」**
+
+### 第二步：首次授权（需要时）
+
+打开面板后若看到 **⚠️ 需授权** 区块，说明还没拿到 APP 通道 token（签到/活动/阅读会受影响）：
+
+1. 点 **「🔗 获取授权码」**，会打开微软登录页
+2. 登录完成后，登录页会弹出 **「✅ 授权码已自动获取」** 提示卡片（脚本已把 code 存好）
+3. 关闭该页，切回 Bing / Rewards 标签页 —— 脚本会**自动把授权码填进输入框并兑换**，日志出现 `📥 已自动捕获授权码…` → `🎉 授权成功！`
+
+> **旧的手动方式仍然可用**：如果自动捕获没生效（比如被拦截、或换了设备），把跳转后空白页的完整网址粘贴到输入框点 **保存** 即可；也支持直接粘贴裸授权码（不含网址）。
+
+保存成功后授权区块会自动隐藏。token 过期时脚本会自动用 refresh_token 续期，一般不需要重复授权。
+
+自动捕获的细节：
+- 授权码有效期很短，脚本只自动兑换 **10 分钟内**捕获的 code，过期会提示重新获取
+- 兑换成功后一次性 code 会被立即清除，不会重复使用
+- 从登录页切回标签页（`visibilitychange` / `focus`）会自动触发兑换，**不需要刷新页面**
+
+### 第三步：看面板读数
+
+展开面板可以看到这些行：
+
+```
+等级 🏅 金牌                              12,345 pts
+🔐 未登录 Microsoft Rewards，…    去登录 →     ← 未登录才显示，整条可点
+🎁 可领取积分                                   500     ← 有待领积分才显示
+📅 每日签到                                 已签到
+🎯 日常活动                                    3/5
+██████░░░░                                              ← 绿色进度条
+📖 阅读任务                                   12/30
+████░░░░░░                                              ← 橙色进度条
+🔍 搜索任务                                   60/60
+██████████                                              ← 蓝色进度条
+📋 其他任务                          前往完成  2/3
+ 周 0/8      月 2/5      限 5/6                          ← 紫色分段线
+ ▬▬▬        ▬▬▬▬▬▬▬   ▬▬▬▬▬▬▬▬▬▬
+```
+
+**「📋 其他任务」**：
+
+- 每个任务一列，上方文字是 `周/月/限 + 已完成/总数`，下方是该任务的进度线
+- 文字 **红色** = 今天还能继续推进（有未完成且未锁定的子项），也就是今天该动手的
+- 文字 **绿色** = 这一组已全部完成
+- 文字 **灰色** = 今天做不了（剩余子项要等之后日期解锁）
+- **鼠标悬停** 看完整任务名；**手机端点一下** 该列，下方会展开完整任务名，再点收起
+- **「前往完成」**（行内按钮）：固定跳转到活动总页 `rewards.bing.com/earn`，一眼看全部可做任务
+- **展开详情里的「前往完成 →」**（小链接）：跳到当前那一条任务的具体完成页 `rewards.bing.com/earn/quest/<任务>`，用于手动补齐脚本做不了的子项
+  - 先点某一列展开，链接就指向那一列的任务
+
+### 第四步：执行任务
+
+面板底部有 5 个按钮：
+
+| 按钮 | 作用 |
+| --- | --- |
+| 🔍 搜索 | 执行搜索任务（含暂停机制） |
+| 🎯 活动 | 交卷所有未完成的日常活动 |
+| ✅ 签到 | 执行每日签到 |
+| 📖 阅读 | 执行阅读任务 |
+| 🚀 一键全部执行 | 依次执行 **签到 → 阅读 → 活动 → 搜索** |
+
+**暂停/继续**：只要有任务在跑（无论是单任务还是一键），底部按钮会变成 **「⏸️ 暂停执行」**，点一下即可暂停；暂停后按钮变成 **「▶️ 继续执行」**，点一下接着跑。各任务在每次循环前都有暂停检查点，会在当前这一步做完后停下。
+
+### 第五步：看日志
+
+面板底部日志区记录每一步动作，保留最近 200 条，自动滚到底部。
+
+活动任务日志示例：
+
+```
+▶️ (1/5) 执行: 每日测验
+✅ (1/5) 每日测验 完成 +10 分
+⏳ 间隔等待 6.2 秒...
+❌ (2/5) 某活动 失败：服务端返回 0 分（未记账）
+🏁 活动全部完成：成功 3 个，失败 1 个，跳过 2 个（1 个需 App 解锁、1 个打卡任务），到账积分 30/50（本次 +30）
+```
+
+---
+
+## ⚙️ 自定义配置
+
+打开脚本，修改顶部 `CONFIG` 对象：
+
+```js
+const CONFIG = {
+    pc: { minDelay: 15000, maxDelay: 30000 },   // 搜索间隔（毫秒）
+    read: { minDelay: 8000, maxDelay: 15000 },  // 阅读间隔（毫秒）
+    pause: {
+        enabled: true,      // 是否开启定期长暂停（防风控）
+        interval: 10,       // 每搜多少次触发一次长暂停
+        duration: () => (3 + Math.random() * 7) * 60 * 1000  // 暂停 3~10 分钟
+    }
+};
+```
+
+- **嫌慢**：把 `minDelay/maxDelay` 调小，但过低容易触发风控
+- **嫌频繁暂停**：把 `pause.interval` 调大，或 `enabled: false` 关闭
+- **区域**：脚本会自动读取账号服务端下发的区域（`state.country`），活动卡片据此过滤；无需手动配置
+
+---
+
+## 🗂 存储项说明
+
+| 存储键 | 用途 |
+| --- | --- |
+| `mr_search_progress` | 当日搜索进度（跨页面/刷新恢复） |
+| `mr_promo_score` | 当日活动积分统计 |
+| `mr_quest_state` | 当日打卡任务进度与标题缓存 |
+| `mr_action_cache` | Next.js server action 标识缓存 |
+| `refresh_token` / `auth_code` | APP 通道授权凭据 |
+| `Config.lastSignDate` | 本地签到日期（兜底用） |
+| `Config.claimNoticeDate` | 可领取积分通知去重日期 |
+
+需要重置某天数据时，在脚本管理器里删除对应键即可；跨天会自动重置。
+
+---
+
+## 📜 更新日志
+
+### v1.4.0
+
+#### 📋 其他任务面板
+- 每个任务一列，上方文字是 `周/月/限 + 已完成/总数`，下方是该列的分段进度线；文字红色 = 今天还能推进，绿色 = 已全部完成，灰色 = 今天做不了
+- 行内`前往完成` 固定跳活动总页 `rewards.bing.com/earn`；展开详情里的「前往完成 →」跳该条任务的具体完成页
+- 鼠标悬停看完整任务名，手机端点一下即可展开/收起
+
+#### 🔍 搜索
+- 设备自动识别：手机用移动 UA + 20–35s 间隔，电脑用桌面 UA + 15–30s 间隔；启动日志不再打印环境信息
+- 达到预估上限后同步真实进度，未满自动补搜（最多 2 轮容错）
+
+#### 🛡️ 稳定性 / 数据完整性
+- 首屏缺数据每 5 分钟自动补拉，只补拉缺的那几项
+- **未登录直接提醒**：抓到登录页时面板顶部亮起红条「🔐 未登录 Microsoft Rewards · 去登录 →」，点击打开 `rewards.bing.com`；登录后切回原页面自动重拉并自动消失
+- 可领取积分解析支持多语言文案 + `pointClaim` JSON + APP 接口字段，非中文区域也能识别
+
+#### 🎯 活动 / 签到 / 授权
+- 活动任务改为逐条提示，结束后给完整汇总（成功 / 失败 / 跳过明细）
+- 授权码全链路自动化：登录页捕获 code → 提示卡片 → 切回 Bing/Rewards 自动回填并兑换，保留手动粘贴兜底(参考脚本咪咪的Get Microsoft Rewards (移动端优化版))
+- 版本号统一从脚本元数据读取，不再多处硬编码
+
+---
+
+## 📜 开源致谢 / Acknowledgments
+
+- **原版项目**：本项目基于 [QingJ](https://github.com/QingJ01) 的开源作品《Get Microsoft Rewards》二次开发。
+- **逻辑借鉴**：本插件的功能参考了其他相关插件，谨此一并致谢。
+- **开源协议**：本项目严格遵守 [MIT License](LICENSE) 协议。
 
 ---
 
@@ -34,3 +228,4 @@
 
 - 本脚本仅供技术学习与交流使用，严禁用于任何商业牟利行为。
 - 作者及协作者不对任何形式的账号封禁、积分清零或权益扣除承担责任。
+- 使用本脚本即表示你已了解并接受上述风险。
