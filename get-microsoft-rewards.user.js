@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Get Microsoft Rewards (修复/增强版)
 // @namespace    https://github.com/Muverix/Get-Microsoft-Rewards
-// @version      1.4.0
+// @version      1.4.1
 // @description  微软 Rewards 页面内助手：本地搜索、活动提交、每日签到、阅读、月度/周度打卡进度查看，全部在页面里一键完成。
 // @author       Muverix
 // @license      MIT
@@ -18,8 +18,6 @@
 // @grant        GM_notification
 // @grant        GM_cookie
 // @grant        GM_registerMenuCommand
-// @grant        GM_openInTab
-// @grant        GM_log
 // @connect      bing.com
 // @connect      rewards.bing.com
 // @connect      www.bing.com
@@ -48,10 +46,6 @@
         (typeof GM_info !== 'undefined' && GM_info?.script?.version) ||
         (document.currentScript?.textContent?.match(/@version\s+([\w.\-]+)/i) || [])[1] ||
         '0.0.0';
-    // 但只在下列站点构建面板，其它页面直接返回
-    const HOST_SUPPORTED = ['rewards.bing.com', 'www.bing.com', 'cn.bing.com', 'rewards.microsoft.com', 'login.live.com'];
-    if (!HOST_SUPPORTED.includes(window.location.hostname)) return;
-
     /* =========================================================================
      * 登录页「授权码自动捕获」
      * -------------------------------------------------------------------------
@@ -59,14 +53,27 @@
      * 只负责把跳转后网址里的 code 自动存进脚本存储，并给出提示页。
      * 回到 Bing / Rewards 标签页后，tryAutoFillAuthCode() 会自动回填并兑换，
      * 全程无需复制粘贴。
+     * 注意：这段必须排在下面的站点白名单之前——login.microsoftonline.com /
+     * account.live.com 不在白名单里，放后面的话这个分支永远走不到。
      * ========================================================================= */
     if (/^(login\.(live|microsoftonline)\.com|account\.live\.com)$/i.test(location.hostname)) {
         initOAuthCapturePage();
         return;
     }
 
+    // 只保留真正能取到数据的域名：所有抓取/交卷都硬编码到 rewards.bing.com，
+    // rewards.microsoft.com 上能建面板但拿不到账号数据，留着只会误导。
+    const HOST_SUPPORTED = ['rewards.bing.com', 'www.bing.com', 'cn.bing.com'];
+    if (!HOST_SUPPORTED.includes(window.location.hostname)) return;
+
     function initOAuthCapturePage() {
         const href = location.href;
+        // 本函数在脚本最顶部执行，此时下方的 escapeHtmlText 还没初始化（const 的 TDZ），
+        // 所以这里用局部转义。网址里的 code / error 一律按纯文本渲染，绝不当 HTML 插入，
+        // 否则一条 ?error_description=<img onerror=...> 的链接就能在本页执行任意脚本。
+        const esc = (s) => String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         let code = '';
         const m = href.match(/[?&#]code=([^&#\s"']+)/i);
         if (m) {
@@ -87,7 +94,6 @@
             }
         } catch (e) { }
 
-        // 极简提示页（白底深字，亮色浏览器下清晰）
         const box = document.createElement('div');
         box.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(360px,92vw);box-sizing:border-box;background:#fff;color:#222;border:1px solid #e0e0e0;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.15);padding:20px;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;z-index:2147483647;text-align:center;';
 
@@ -96,20 +102,21 @@
                 <div style="font-size:34px;line-height:1">✅</div>
                 <div style="font-weight:700;font-size:16px;margin:8px 0 6px">授权码已自动获取</div>
                 <div style="color:#666;font-size:13px">现在可以关闭本页，回到 Bing 标签页。<br>脚本会自动填充授权码并完成兑换。</div>
-                <div style="margin:12px 0;padding:8px;background:#fafafa;border:1px solid #eee;border-radius:6px;font:11px/1.5 monospace;color:#888;word-break:break-all">${code.slice(0, 24)}…</div>
+                <div style="margin:12px 0;padding:8px;background:#fafafa;border:1px solid #eee;border-radius:6px;font:11px/1.5 monospace;color:#888;word-break:break-all">${esc(code.slice(0, 24))}…</div>
                 <div style="display:flex;gap:8px;margin-top:12px">
                     <button id="mr-cap-copy" style="flex:1;min-height:42px;border:1px solid #d0d0d0;background:#fff;color:#333;border-radius:6px;font-size:14px">📋 复制授权码</button>
                     <button id="mr-cap-close" style="flex:1;min-height:42px;border:none;background:#0078d4;color:#fff;border-radius:6px;font-size:14px">关闭本页</button>
                 </div>
             `;
         } else {
-            const e1 = errM ? errM[1] : '未知错误';
+            const e1 = errM ? errM[1].slice(0, 80) : '未知错误';
             let e2 = '';
             try { e2 = errDesc ? decodeURIComponent(errDesc[1].replace(/\+/g, ' ')) : ''; } catch (e) { e2 = errDesc ? errDesc[1] : ''; }
+            e2 = e2.slice(0, 200);
             box.innerHTML = `
                 <div style="font-size:34px;line-height:1">⚠️</div>
                 <div style="font-weight:700;font-size:16px;margin:8px 0 6px">授权被取消或失败</div>
-                <div style="color:#666;font-size:13px;word-break:break-all">${e1}${e2 ? '<br>' + e2 : ''}</div>
+                <div style="color:#666;font-size:13px;word-break:break-all">${esc(e1)}${e2 ? '<br>' + esc(e2) : ''}</div>
                 <div style="color:#666;font-size:13px;margin-top:8px">关闭本页，回到 Bing 后重新点击「获取授权码」。</div>
                 <button id="mr-cap-close" style="width:100%;min-height:42px;margin-top:12px;border:none;background:#0078d4;color:#fff;border-radius:6px;font-size:14px">关闭本页</button>
             `;
@@ -130,7 +137,6 @@
             }
         };
     }
-
 
     // ========== 环境识别：脚本跑在手机上还是电脑上 ==========
     // 搜索请求的 UA / 站点要跟运行环境一致：手机用移动 UA，电脑用桌面 UA。
@@ -157,66 +163,128 @@
 
     // ========== 配置 ==========
     const CONFIG = {
-        pc: { minDelay: 15000, maxDelay: 30000 },
-        mobile: { minDelay: 20000, maxDelay: 35000 },
+        // 搜索间隔：一次搜索只值 3 分，等得久一点但稳。改成 18–35s / 25–45s 后
+        // 一次跑满 45 次约 20 分钟，仍在可接受范围，但请求密度明显更像真人。
+        pc: { minDelay: 18000, maxDelay: 35000 },
+        mobile: { minDelay: 25000, maxDelay: 45000 },
         ua: {
             pc: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36 Edg/157.0.0.0',
             mobile: 'Mozilla/5.0 (Linux; Android 16; MEIZU 20 Build/BQ2A.251110.001-BP2A.250605.031.A3; ) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/150.0.7871.181 Mobile Safari/537.36 BingSapphire/34.3.441014006',
             rewardsApp: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0 MSRewards/Desktop/1.3.0'
         },
         mobileApi: {appId: 'SAAndroid/34.3.441014006'},
-        read: { minDelay: 8000, maxDelay: 15000 },
-        // 多个热搜API备用源
+        read: { minDelay: 15000, maxDelay: 30000 },
         hotApis: [
             { url: 'https://hot.baiwumm.com/api/', sources: ['weibo', 'douyin', 'baidu', 'zhihu', 'toutiao'] },
             { url: 'https://hotapi.nntool.cc/', sources: ['weibo', 'douyin', 'baidu', 'toutiao', 'zhihu'] },
             { url: 'https://cnxiaobai.com/DailyHotApi/', sources: ['weibo', 'douyin', 'baidu', 'toutiao'] }
         ],
         keywords: ["天气预报", "今日新闻", "体育赛事", "股票行情", "电影推荐", "科技资讯", "美食食谱", "旅游攻略"],
-        // 暂停机制配置
+        // 防风控长暂停：每 15 次搜索随机停 2–5 分钟，兼顾请求节奏与总耗时
         pause: {
-        enabled: true,
-        interval: 10,
-        // 每次暂停时随机 3-10 分钟
-        duration: () => (3 + Math.random() * 7) * 60 * 1000
-    }
+            enabled: true,
+            interval: 15,
+            duration: () => (2 + Math.random() * 3) * 60 * 1000
+        }
     };
+
+    // ========== dapi APP 通道：统一常量与请求头 ==========
+    // 改一处漏一处就会出现区域/UA 不一致。这里集中收敛（都是运行时调用，函数声明会提升）。
+    const DAPI_ME_URL = 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613';
+    const DAPI_ACTIVITY_URL = 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities';
+    const READ_OFFER_ID = 'ENUS_readarticle3_30points';
+    const currentRegion = () => String(
+        state.country || dashboard?.userStatus?.country || dashboard?.country || 'cn'
+    ).toLowerCase();
+    const dapiHeaders = (token, region, withContentType = true) => {
+        const h = {
+            'user-agent': CONFIG.ua.mobile,
+            'authorization': `Bearer ${token}`,
+            'x-rewards-appid': CONFIG.mobileApi.appId,
+            'x-rewards-ismobile': 'true',
+            'x-rewards-country': region,
+            'x-rewards-language': 'zh',
+            'x-rewards-partnerid': 'startapp',
+            'x-rewards-flights': 'rwgobig'
+        };
+        if (withContentType) h['content-type'] = 'application/json; charset=UTF-8';
+        return h;
+    };
+
+    // dapi/me 短缓存：默认总是拉最新（积分/进度随时会变，签到完立刻刷新不能读旧值），
+    // 只有「同一轮里的次要读取」（签到 last_updated 兜底、初始化补查阅读进度）才传
+    // useCache=true 复用 30 秒内的响应。每次真实请求都会回写缓存。
+    const dapiMeCache = { at: 0, region: '', data: null };
+    async function getDapiMe(token, region, useCache = false) {
+        if (useCache && dapiMeCache.data && dapiMeCache.region === region && Date.now() - dapiMeCache.at < 30000) {
+            return dapiMeCache.data;
+        }
+        const res = await gmRequest({
+            method: 'GET',
+            url: DAPI_ME_URL + `&_=${Date.now()}`,
+            headers: dapiHeaders(token, region)
+        });
+        const data = typeof res === 'string' ? JSON.parse(res) : res;
+        dapiMeCache.data = data;
+        dapiMeCache.region = region;
+        dapiMeCache.at = Date.now();
+        return data;
+    }
+
+    const savePromoScore = () => {
+        try {
+            GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
+        } catch { }
+    };
+
+    // 拿不到新 token 时返回 null，调用方保持原行为（返回原响应 / 抛原异常）。
+    async function retryWithFreshToken(requestFn) {
+        state.accessToken = null;
+        state.accessTokenExpiresAt = 0;
+        const token = await getAccessToken({ forceRefresh: true });
+        if (!token) return null;
+        return { res: await requestFn(token) };
+    }
+
+    // 积分新鲜度阈值：超过这个时间没有一次成功同步，就把「⚠ 未同步」亮出来。
+    // 只靠「这一轮有没有报错」是不够的 —— updateData 有多条静默 return 的分支，
+    // 以及登录失效后返回空数据却不抛错的情况，都会让积分一直停在旧值却不报警。
+    const SYNC_STALE_MS = 3 * 60 * 1000;
 
     // ========== 状态 ==========
     let state = {
         level: 1, points: 0,
         readRunning: false,
         pcCur: 0, pcMax: 0,
-        mobileCur: 0, mobileMax: 0,
         promosTotal: 0, promosDone: 0,
-        signDone: false, signPoints: -1,
         readCur: 0, readMax: 0,
         running: false,
-        busyCount: 0, // 👈 补上此初始化
+        allRunning: false,
+        busyCount: 0,
         accessToken: null,
         accessTokenExpiresAt: 0,
-        updating: false,
         updatingPromise: null,
-        // 新增：搜索进度和暂停状态
+        // 搜索进度和暂停状态（只保留真正被读取的字段）
         searchCount: 0,           // 当前搜索计数（用于暂停判断）
-        isPaused: false,          // 是否处于暂停状态
-        pauseEndTime: 0,          // 暂停结束时间戳
-        countdownStartTime: 0,    // 倒计时开始时间（精确计时）
-        countdownDuration: 0,     // 倒计时总时长
         manualPaused: false,      // 手动暂停
         pausePromise: null,
         pauseResolver: null,
-        // 新增：区域、月度打卡进度、领取状态
         country: '',
         quests: [],
         questDetailIdx: -1,   // 其他任务：当前点击展开的任务下标（-1 = 未展开）
         claimRunning: false,
         punchcardRunning: false,
         needLogin: false,     // 抓到登录页 → 提示用户去登录 rewards.bing.com
-        loginReason: ''       // 触发提醒的来源（dash / earn / quest），仅用于提示文案
+        loginReason: '',      // 触发提醒的来源（dash / earn / quest），仅用于提示文案
+        // true = 这一轮没拿到新数据，积分可能是旧的 → 在积分旁亮一个「⚠ 未同步」
+        syncStale: false,
+        syncReason: '',       // 未同步的原因，鼠标悬停时显示
+        syncAt: 0,            // 上次成功同步的时间戳
+        syncRetryAt: 0,       // 上次点徽章手动同步的时间，用于节流
+        syncBusy: false,      // 手动同步进行中 → 徽章显示「⟳ 同步中」
+        syncStartedAt: Date.now()  // 脚本启动时间，syncAt 为 0 时用它兜底计时
     };
     let dashboard = null;
-    let loginCookie = '';
 
     // ========== 进度保存/恢复 ==========
     const STORAGE_KEY = 'mr_search_progress';
@@ -239,7 +307,7 @@
             state.searchCount = data.searchCount || 0;
             return data;
         } else {
-            resetProgress(); // 👈 跨天重置本地和内存中的计数
+            resetProgress(); // 跨天重置本地和内存中的计数
         }
     } catch (e) { }
     return null;
@@ -254,7 +322,7 @@
         }
 
         if (!token) {
-            log('⚠️ 未获取到活动Token，请确认登录状态或刷新页面重试');
+            logToken('⚠️ 未获取到活动Token，请确认登录状态或刷新页面重试');
             return null;
         }
 
@@ -262,30 +330,22 @@
             const res = await requestFn(token);
 
             // 2. 检查返回结果字符串（适配 gmRequest 正常返回 401 错误 JSON 的情况）
-            if (typeof res === 'string' && (res.includes('invalid_token') || res.includes('Unauthorized') || res.includes('\"code\":401'))) {
+            if (typeof res === 'string' && (res.includes('invalid_token') || res.includes('Unauthorized') || res.includes('"code":401'))) {
                 console.warn('[Rewards] 响应中检测到 Token 失效，重新获取 Token 中...');
-                state.accessToken = null;
-                state.accessTokenExpiresAt = 0;
-                token = await getAccessToken({ forceRefresh: true });
-                if (token) {
-                    return await requestFn(token);
-                }
+                const retry = await retryWithFreshToken(requestFn);
+                if (retry) return retry.res;
             }
             return res;
         } catch (e) {
             // 3. 捕获网络层抛出的 401 异常
-            const is401 = (e && e.status === 401) || 
-                          (e && e.responseStatus === 401) || 
+            const is401 = (e && e.status === 401) ||
+                          (e && e.responseStatus === 401) ||
                           (e && e.message && (e.message.includes('401') || e.message.includes('Unauthorized')));
 
             if (is401) {
                 console.warn('[Rewards] 捕获到网络层 401 异常，重新获取 Token 中...');
-                state.accessToken = null;
-                state.accessTokenExpiresAt = 0;
-                token = await getAccessToken({ forceRefresh: true });
-                if (token) {
-                    return await requestFn(token);
-                }
+                const retry = await retryWithFreshToken(requestFn);
+                if (retry) return retry.res;
             }
             throw e;
         }
@@ -338,8 +398,15 @@
                             if (xhr.status >= 200 && xhr.status < 300) {
                                 resolve(options.returnUrl ? xhr.finalUrl : xhr.responseText);
                             } else if (xhr.status >= 300 && xhr.status < 400) {
-                                const loc = xhr.responseHeaders.match(/Location:\s*(.*?)\s*[\r\n]/i);
-                                resolve(loc ? loc[1] : xhr.responseText);
+                                // 3xx 不再当成成功：以前把 Location 头当响应体 resolve 出去，
+                                // 调用方会拿一个 URL 字符串去解析（活动/搜索都因此误判成功）
+                                const loc = (String(xhr.responseHeaders || '').match(/^\s*location:\s*(.*?)\s*$/im) || [])[1] || '';
+                                const err = new Error(`HTTP ${xhr.status}${loc ? ' → ' + loc : '（重定向）'}`);
+                                err.status = xhr.status;
+                                err.location = loc;
+                                err.responseText = xhr.responseText;
+                                err.finalUrl = xhr.finalUrl;
+                                reject(err);
                             } else {
                                 const err = new Error(`HTTP ${xhr.status}`);
                                 err.status = xhr.status;
@@ -362,16 +429,17 @@
                 });
             } catch (e) {
                 if (attempt >= retries || !shouldRetry(e)) throw e;
+                // 指数退避 + 抖动：原抖动只有 0~250ms，多个并发请求会几乎同时重试，
+                // 风控看来就是一串整齐的连发。改成 300~1200ms 随机，让重试节奏散开。
                 const delay = retryDelay * Math.pow(2, attempt);
                 attempt++;
-                await sleep(delay + randomRange(0, 250));
+                await sleep(delay + randomRange(300, 1200));
             }
         }
     }
 
     // 获取热搜词（支持多源自动切换）
     async function getHotQuery() {
-        // 打乱API顺序，随机选择
         const apis = [...CONFIG.hotApis].sort(() => Math.random() - 0.5);
 
         for (const api of apis) {
@@ -381,51 +449,55 @@
                 const data = JSON.parse(res);
                 if (data.code === 200 && data.data?.length) {
                     const title = randomPick(data.data).title || '';
-                    // 随机截取长度，更自然
                     const len = randomRange(8, 25);
                     return title.substring(0, len);
                 }
             } catch { /* 尝试下一个API */ }
         }
-        // 所有API都失败，使用本地关键词
         return `${randomPick(CONFIG.keywords)} ${Math.random().toString(36).slice(2, 6)}`;
     }
 
     // Cookie 管理
+    // 有些管理器（移动端 App、部分 iOS 扩展）不提供 GM_cookie，直接返回空串会让搜索和页面抓取
+    // 全部失效却不说明原因。这里补一条兜底：同源页面时退回 document.cookie。
     function getCookies(url) {
-    return new Promise(resolve => {
-        try {
-            if (typeof GM_cookie === 'undefined') {
-                console.warn('[Rewards] GM_cookie不存在');
-                return resolve('');
+        return new Promise(resolve => {
+            const docCookie = () => {
+                try {
+                    const u = new URL(url, location.href);
+                    const strip = h => h.replace(/^www\./, '');
+                    if (strip(u.hostname) !== strip(location.hostname)) return '';
+                    return document.cookie || '';
+                } catch { return ''; }
+            };
+            let done = false;
+            let cookieTimer = null;
+            const finish = (val) => {
+                if (done) return;
+                done = true;
+                if (cookieTimer) clearTimeout(cookieTimer);
+                resolve(val || '');
+            };
+
+            if (typeof GM_cookie === 'undefined' || !GM_cookie || typeof GM_cookie.list !== 'function') {
+                console.warn('[Rewards] GM_cookie 不可用，改用 document.cookie（仅同源有效）');
+                return finish(docCookie());
             }
 
-            GM_cookie.list({ url }, cookies => {
-                if (!cookies || !cookies.length) {
-                    console.warn('[Rewards] Cookie为空:', url);
-                    return resolve('');
-                }
-
-                const str = cookies
-                    .map(c => `${c.name}=${c.value}`)
-                    .join('; ');
-
-                //console.log('[Rewards] Cookie长度:', str.length, url);
-                resolve(str);
-            });
-
-        } catch (e) {
-            console.error('[Rewards] Cookie获取失败', e);
-            resolve('');
-        }
-    });
-}
-
-    function deleteCookie(name, host = 'bing.com') {
-        return new Promise(resolve => {
-            if (typeof GM_cookie !== 'undefined') {
-                GM_cookie('delete', { url: `https://${host}`, name }, resolve);
-            } else resolve();
+            try {
+                // 个别实现不会回调，3 秒后按兜底处理，避免整个流程卡住
+                cookieTimer = setTimeout(() => finish(docCookie()), 3000);
+                GM_cookie.list({ url }, cookies => {
+                    if (!cookies || !cookies.length) {
+                        console.warn('[Rewards] Cookie为空:', url);
+                        return finish(docCookie());
+                    }
+                    finish(cookies.map(c => `${c.name}=${c.value}`).join('; '));
+                });
+            } catch (e) {
+                console.error('[Rewards] Cookie获取失败', e);
+                finish(docCookie());
+            }
         });
     }
 
@@ -433,14 +505,17 @@
     GM_addStyle(`
         #mr-panel {
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            /* 底部留出 iPhone 的 home 指示条 / 安卓手势区，否则球和面板会被系统栏压住 */
+            bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+            right: calc(20px + env(safe-area-inset-right, 0px));
             z-index: 2147483647;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #fff;
             border: 1px solid #e0e0e0;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             border-radius: 8px;
+            /* 选中态共用的淡紫描边色：打卡列 + 它展开的详情区看起来是一组 */
+            --mr-active-border: rgba(135, 100, 184, .55);
         }
 
         /* 收起状态 */
@@ -462,9 +537,20 @@
         #mr-panel.collapsed svg { width: 24px; height: 24px; fill: currentColor; }
         #mr-panel.collapsed #mr-container { display: none; }
 
-        /* 展开状态 */
-        #mr-panel:not(.collapsed) { width: 300px; }
+        /* 展开状态：小屏不超出可视宽度，内容超高时整块滚动，避免按钮被顶出屏幕 */
+        #mr-panel:not(.collapsed) {
+            width: 300px;
+            max-width: calc(100vw - 24px);
+            max-height: calc(100vh - 40px);
+        }
         #mr-panel:not(.collapsed) svg { display: none; }
+        #mr-container {
+            max-height: calc(100vh - 42px);
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            border-radius: 8px;
+        }
 
         #mr-header {
             padding: 12px 16px;
@@ -501,7 +587,13 @@
 
         /* 其他任务：每个任务一列，上方文字（周/月/限 + 进度），下方进度线条 */
         .mr-quest-grid { display: flex; gap: 6px; margin-bottom: 12px; }
-        .mr-quest-col { flex: 1; min-width: 0; }
+        .mr-quest-col {
+            flex: 1; min-width: 0; cursor: pointer;
+            /* 所有列都留同样的内边距 + 透明边框占位，选中时只换颜色，布局不跳动 */
+            padding: 2px 3px 3px; border-radius: 4px;
+            border: 1px solid transparent;
+            transition: border-color .15s ease, background .15s ease;
+        }
         .mr-quest-label {
             font-size: 10px; line-height: 12px; color: #999; text-align: center;
             margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -513,12 +605,16 @@
         .mr-quest-track { height: 4px; background: #eee; border-radius: 2px; overflow: hidden; }
         .mr-quest-fill { height: 100%; background: #8764b8; border-radius: 2px; }
         .mr-quest-fill.done { background: #107c41; }
-        /* 点击展开：选中列高亮 + 下方任务名详情（手机端无 hover 时靠点击查看） */
-        .mr-quest-col { cursor: pointer; }
+        /* 点击展开：选中列细描边 + 文字高亮，明确提示「刚点的是这一条」 */
+        .mr-quest-col.active {
+            background: #f5f3fa;
+            border-color: var(--mr-active-border);
+        }
         .mr-quest-col.active .mr-quest-label { color: #8764b8; font-weight: 700; }
         .mr-quest-detail {
             font-size: 10px; line-height: 14px; color: #555;
-            background: #f5f3fa; border-radius: 3px; padding: 4px 6px;
+            background: #f5f3fa; border-radius: 4px; padding: 4px 6px;
+            border: 1px solid var(--mr-active-border);
             margin-top: -6px; margin-bottom: 12px; word-break: break-all;
         }
         /* 行右侧：数值 + 「前往完成」跳转链接 */
@@ -531,6 +627,9 @@
         }
         .mr-go:hover { background: #8764b8; color: #fff; }
         .mr-go:active { transform: scale(.96); }
+        /* 待领积分的「去领取」用橙红强调，和普通「前往完成」区分 */
+        .mr-go-claim { border-color: #d83b01; color: #d83b01; }
+        .mr-go-claim:hover { background: #d83b01; color: #fff; }
         .mr-quest-link { color: #8764b8; text-decoration: underline; cursor: pointer; margin-left: 4px; }
 
         .mr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
@@ -549,11 +648,9 @@
         .mr-full { grid-column: span 2; background: #0078d4; color: #fff; border: none; }
         .mr-full:hover { background: #006abc; }
 
-        /* Auth */
         #mr-auth { margin-bottom: 12px; padding: 10px; background: #fff8e1; border: 1px solid #ffe0b2; border-radius: 4px; }
         .mr-input { width: 100%; padding: 4px; border: 1px solid #ccc; font-size: 11px; margin: 4px 0; }
 
-        /* Log */
         #mr-log {
             margin-top: 12px;
             height: 80px;
@@ -570,8 +667,7 @@
     // ========== UI 结构 ==========
     const panel = document.createElement('div');
     panel.id = 'mr-panel';
-    panel.className = 'collapsed'; // 默认折叠
-    // 礼盒 SVG
+    panel.className = 'collapsed';
     const svgIcon = `<svg viewBox="0 0 24 24"><path d="M20 6h-3V4c0-1.1-.9-2-2-2H9c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v3h2v9c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-9h2V8c0-1.1-.9-2-2-2zm-9-2h2v2h-2V4zm0 16H6v-9h5v9zm6 0h-5v-9h5v9zm1.5-11H16V7h2v2zm-4.5 0h-2V7h2v2zm-4.5 0H7V7h2v2zm-3.5 0H4V7h1.5v2z"/></svg>`;
 
     panel.innerHTML = `
@@ -586,19 +682,22 @@
                 <!-- 状态 -->
                 <div class="mr-row">
                     <span>等级 <span id="mr-level" style="font-weight:600">-</span></span>
-                    <span style="color:#d83b01"><span id="mr-points">0</span> pts</span>
+                    <span style="color:#d83b01"><span id="mr-sync" style="display:inline-block;margin-right:6px;padding:0 5px;border-radius:3px;background:#f3f2f1;color:#605e5c;font-size:10px;line-height:14px;font-weight:700;cursor:pointer;white-space:nowrap;vertical-align:middle;user-select:none" title="点击可立即强制同步一次">⟳ 同步中</span><span id="mr-points">0</span> pts</span>
                 </div>
 
-                <!-- 未登录提醒（检测到登录页才显示） -->
+                <!-- 未登录提醒（拿到登录页，或页面 200 但读不到账号数据时显示） -->
                 <div id="mr-login-tip" style="display:none">
                     <span id="mr-login-msg">🔐 未登录 Microsoft Rewards，活动/打卡/可领取积分将取不到数据</span>
                     <span class="mr-login-go">去登录 →</span>
                 </div>
 
-                <!-- 可领取积分（检测到才显示） -->
+                <!-- 可领取积分（检测到才显示）：「去领取」直达官网领取弹窗 -->
                 <div class="mr-row" id="mr-claim" style="display:none">
                     <span>🎁 可领取积分</span>
-                    <span id="mr-claim-amt" style="font-weight:600;color:#d83b01">0</span>
+                    <span class="mr-row-right">
+                        <span id="mr-claim-go" class="mr-go mr-go-claim" role="button" title="打开 Rewards 领取弹窗（dashboard?modal=pointsclaim）">去领取 →</span>
+                        <span id="mr-claim-amt" style="font-weight:600;color:#d83b01">0</span>
+                    </span>
                 </div>
 
                 <!-- 进度 -->
@@ -648,6 +747,7 @@
         close: $('#mr-close'),
         level: $('#mr-level'),
         points: $('#mr-points'),
+        sync: $('#mr-sync'),
         pc: $('#mr-pc'),
         pcBar: $('#mr-pc-bar'),
         signStatus: $('#mr-sign-status'),
@@ -661,6 +761,7 @@
         promoBar: $('#mr-promo-bar'),
         claim: $('#mr-claim'),
         claimAmt: $('#mr-claim-amt'),
+        claimGo: $('#mr-claim-go'),
         loginTip: $('#mr-login-tip'),
         loginMsg: $('#mr-login-msg'),
         btnSearch: $('#btn-search'),
@@ -689,9 +790,14 @@
     };
 
     const LOG_MAX_LINES = 200;
+    // 不用 toLocaleTimeString().slice(0,5)：12 小时制 locale 下会截成 "6:31 " 这种残缺时间
+    const hhmm = () => {
+        const d = new Date();
+        return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    };
     const log = (msg) => {
         const div = document.createElement('div');
-        div.textContent = `[${new Date().toLocaleTimeString().slice(0, 5)}] ${msg}`;
+        div.textContent = `[${hhmm()}] ${msg}`;
         nodes.logBox.appendChild(div);
         while (nodes.logBox.childNodes.length > LOG_MAX_LINES) {
             nodes.logBox.removeChild(nodes.logBox.firstChild);
@@ -718,6 +824,29 @@
             ensurePanel();
             panel.classList.remove('collapsed');
         });
+    }
+
+    // 点积分旁的同步徽章 → 立即强制同步一次（清掉页面缓存和失败负缓存，不受 60 秒轮询影响）
+    if (nodes.sync) {
+        nodes.sync.onclick = async () => {
+            if (state.syncBusy) return;               // 正在同步，忽略连点
+            const now = Date.now();
+            if (now - (state.syncRetryAt || 0) < 5 * 1000) {
+                log('⏳ 5 秒内只同步一次，请稍等');
+                return;
+            }
+            state.syncRetryAt = now;
+            state.syncBusy = true;
+            render();                                  // 先变「⟳ 同步中」
+            log('🔄 手动强制同步…');
+            // clearPageCache 会同时清掉页面缓存和失败负缓存，确保这次是真的重新抓
+            try { clearPageCache(); } catch { }
+            try {
+                await updateData();
+            } catch { /* updateData 内部已兜底 */ }
+            state.syncBusy = false;
+            render();                                  // 按结果变绿 / 变红
+        };
     }
 
     const updateAllButton = () => {
@@ -888,26 +1017,29 @@
     updateAllButton();
 
     // 自动抓取微软 OAuth Code
+    // 注意：这里刻意不用 gmRequest —— OAuth authorize 正常会 302 到 desktop.srf，
+    // 我们要的正是跳转后的 finalUrl，而 gmRequest 把 3xx 当错误 reject。
     async function checkAuth() {
-        // return null;//test
         try {
             let cookie = '';
             if (typeof getCookies === 'function') {
                 cookie = await getCookies('https://login.live.com');
             }
 
-            const authUrl = 'https://login.live.com/oauth20_authorize.srf?client_id=0000000040170455&scope=service::prod.rewardsplatform.microsoft.com::MBI_SSL&response_type=code&redirect_uri=https://login.live.com/oauth20_desktop.srf';
+            const authUrl = AUTH_URL; // 与「获取授权码」按钮共用同一份地址，避免两处改一处漏
 
             const res = await new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'GET',
                     url: authUrl,
+                    timeout: 15000,
                     headers: {
                         'Cookie': cookie,
-                        'User-Agent': (typeof CONFIG !== 'undefined' && CONFIG.ua?.pc) ? CONFIG.ua.pc : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        'User-Agent': CONFIG.ua.pc
                     },
                     onload: r => resolve(r),
-                    onerror: e => reject(e)
+                    onerror: e => reject(e),
+                    ontimeout: () => reject(new Error('Timeout'))
                 });
             });
 
@@ -928,94 +1060,39 @@
         }
     }
 
-    // ========== 核心逻辑 (简化版引用) ==========
+    // ========== 核心逻辑 ==========
 
-    // 数据刷新函数（修复 allP 报错 + 本地签到日期双重校验）
     async function updateData() {
-    if (state.updatingPromise) return state.updatingPromise;
-    state.updating = true;
-    state.updatingPromise = (async () => {
+        if (state.updatingPromise) return state.updatingPromise;
+        state.updatingPromise = (async () => {
         try {
-            const cookie = await getCookies('https://rewards.bing.com');
-
-            let htmlRes = '';
-            try {
-                htmlRes = await gmRequest({
-                    method: 'GET',
-                    url: 'https://rewards.bing.com/',
-                    headers: {
-                        'User-Agent': CONFIG.ua.pc,
-                        'Cookie': cookie,
-                        'Referer': 'https://www.bing.com/'
-                    }
-                });
-
-                const tokenMatch = htmlRes.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/i)
-                                || htmlRes.match(/value="([^"]+)"[^>]*name="__RequestVerificationToken"/i)
-                                || htmlRes.match(/RequestVerificationToken["']?\s*[:=]\s*["']([^"']+)["']/i)
-                                || htmlRes.match(/"verificationToken"\s*:\s*["']([^"']+)["']/i);
-                if (tokenMatch) {
-                    state.searchToken = tokenMatch[1];
-                }
-            } catch (e) {}
-
+            // 等级 / 积分 / 搜索 / 阅读由 dapi 提供，直接走统一入口（每次拉最新并回写缓存，供同轮次要读取复用）。
             let dashData = null;
-
-            if (htmlRes) {
-                const dashMatch = htmlRes.match(/var\s+dashboard\s*=\s*({[\s\S]*?});\s*var/i)
-                               || htmlRes.match(/window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/i);
-                if (dashMatch) {
-                    try { dashData = JSON.parse(dashMatch[1]); } catch (e) {}
+            try {
+                const token = await getAccessToken();
+                if (token) {
+                    const parsed = await getDapiMe(token, currentRegion());
+                    dashData = parsed.response?.dashboard || parsed.response || parsed;
                 }
+            } catch (e) {
+                console.error('[Rewards] DAPI 请求错误:', {
+                    status: e?.status,
+                    message: e?.message,
+                    responseText: e?.responseText,
+                    finalUrl: e?.finalUrl
+                });
             }
 
-            if (!dashData || !dashData.userProfile) {
-                try {
-                    const token = await getAccessToken();
-                    if (token) {
-                        const dapiRes = await gmRequest({
-                            method: 'GET',
-                            url: `https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613&_=${Date.now()}`,
-                            headers: {
-                                'content-type': 'application/json; charset=UTF-8',
-                                'user-agent': CONFIG.ua.mobile,
-                                'authorization': `Bearer ${token}`,
-                                'x-rewards-appid': CONFIG.mobileApi.appId,
-                                'x-rewards-ismobile': 'true',
-                                'x-rewards-country': 'cn',
-                                'x-rewards-language': 'zh',
-                                'x-rewards-partnerid': 'startapp',
-                                'x-rewards-flights': 'rwgobig'
-                            }
-                        });
-                        const parsed = JSON.parse(dapiRes);
-                        dashData = parsed.response?.dashboard || parsed.response || parsed;
-                    }
-                } catch (e) {
-                    console.error('[Rewards] DAPI 请求错误:', {
-                        status: e?.status,
-                        message: e?.message,
-                        responseText: e?.responseText,
-                        finalUrl: e?.finalUrl
-                    });
-
-                    console.error(
-                        '[Rewards] DAPI 401 Response:',
-                        e?.responseText || '(empty)'
-                    );
-                }
-            }
-
-            if (!dashData) {
-                log('❌ 获取数据失败，请确认已登录 rewards.bing.com');
+            // 空对象也算失败：dapi 兜底有时会返回一个没有 userProfile/balance/userStatus 的壳，
+            // 以前会继续往下走，把等级显示成 1、积分显示成 0，看着像"数据正常但全零"
+            if (!dashData || (!dashData.userProfile && !dashData.userStatus && dashData.balance == null)) {
+                warnDataFail();
                 return;
             }
 
             dashboard = dashData;
 
-            // =========================================================================
             // 1. 解析等级与积分（捕获 profile.attributes.level）
-            // =========================================================================
             const profile = dashData.userProfile || dashData.profile || {};
             const balance = dashData.balance;
             const userStatus = dashData.userStatus || dashData.status || {};
@@ -1045,9 +1122,6 @@
                 '';
 
             const rawLevelStr = String(rawLevelCandidate);
-
-            // 🔍 控制台确认日志
-            //console.log('[Rewards 最终等级匹配]: 捕获到等级代号 ->', rawLevelStr);
 
             // 微软新版体系精准匹配（newLevel3 / Level3 / Gold = 金牌）
             if (/Gold|金牌|Level3|newLevel3/i.test(rawLevelStr) || rawLevelStr === '3') {
@@ -1117,8 +1191,9 @@
 
             let isRemoteSigned = false;
 
-            // 宽松真值解析：兼容布尔/字符串 true / "1" / "True" 等
-            const isTrueVal = (v) => {
+            // 宽松真值解析：兼容布尔/字符串 true / "1" / "True" 等。
+            // 特意不叫 isTrueVal —— 文件后面还有一个全局同名、但语义更严格的实现（只认 true）。
+            const looseTrueVal = (v) => {
                 if (typeof v === 'boolean') return v === true;
                 if (typeof v === 'number') return v !== 0;
                 if (typeof v === 'string') {
@@ -1170,11 +1245,11 @@
 
                 // 完成状态：宽松解析多种字段来源
                 const complete =
-                    isTrueVal(checkInPromo.complete) ||
-                    isTrueVal(checkInPromo.completed) ||
-                    isTrueVal(checkInPromo.isCompleted) ||
-                    isTrueVal(attrs.complete) ||
-                    isTrueVal(attrs.completed) ||
+                    looseTrueVal(checkInPromo.complete) ||
+                    looseTrueVal(checkInPromo.completed) ||
+                    looseTrueVal(checkInPromo.isCompleted) ||
+                    looseTrueVal(attrs.complete) ||
+                    looseTrueVal(attrs.completed) ||
                     checkInPromo.state === 'CLAIMED' ||
                     attrs.state === 'CLAIMED' ||
                     checkInPromo.status === 'CLAIMED' ||
@@ -1190,11 +1265,11 @@
             if (!isRemoteSigned) {
                 try {
                     const claimed =
-                        isTrueVal(dashData?.claimedToday) ||
-                        isTrueVal(dashData?.userStatus?.claimedToday) ||
-                        isTrueVal(dashData?.status?.claimedToday) ||
-                        isTrueVal(dashData?.userStatus?.claimed) ||
-                        isTrueVal(dashData?.claimed);
+                        looseTrueVal(dashData?.claimedToday) ||
+                        looseTrueVal(dashData?.userStatus?.claimedToday) ||
+                        looseTrueVal(dashData?.status?.claimedToday) ||
+                        looseTrueVal(dashData?.userStatus?.claimed) ||
+                        looseTrueVal(dashData?.claimed);
                 
                     if (claimed) {
                         isRemoteSigned = true;
@@ -1214,7 +1289,7 @@
                 try {
                     const dapiToken = await getAccessToken();
                     if (dapiToken) {
-                        const dapiPromos = await getDapiPromotions(dapiToken, state.country || 'cn');
+                        const dapiPromos = await getDapiPromotions(dapiToken, currentRegion());
                         if (Array.isArray(dapiPromos)) {
                             const oidOf = p => ((p?.attributes?.offerid || p?.offerId || p?.id || '') + '').toLowerCase();
                             const signCard = dapiPromos.find(p => oidOf(p) === 'gamification_sapphire_dailycheckin')
@@ -1222,10 +1297,14 @@
                             if (signCard) {
                                 const lu = signCard.attributes?.last_updated || signCard.last_updated || '';
                                 if (lu) {
-                                    // last_updated 是 ISO 时间（含时区），取日期部分与"今天"比对
-                                    const luDate = String(lu).slice(0, 10); // YYYY-MM-DD
-                                    const todayIso = new Date().toISOString().slice(0, 10);
-                                    if (luDate === todayIso) {
+                                    // last_updated 多半是带时区的 ISO 时间，也可能是不带时区的时间串。
+                                    // 必须换算成「本地日期」再和今天比：以前直接取 UTC 日期，
+                                    // 北京时间 00:00–08:00 这段 UTC 还停在昨天，会把已签到判成未签到。
+                                    const t = new Date(lu);
+                                    const luDate = isNaN(t.getTime())
+                                        ? String(lu).slice(0, 10)
+                                        : `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+                                    if (luDate === getDateHyphen()) {
                                         isRemoteSigned = true;
                                         state.checkedIn = true;
                                     }
@@ -1238,14 +1317,11 @@
                 }
             }
 
-
-            // =========================================================================
-            // 5. 阅读任务与活动列表统计（优先从活动列表中提取真实进度，修复日志进度不一致问题）
-            const readOfferId = 'ENUS_readarticle3_30points';
+            // 5. 阅读任务与活动列表统计（优先用活动列表里的真实进度）
             const readPromo = allP.find(p => {
                 if (!p || typeof p !== 'object') return false;
                 const offerId = p.attributes?.offerid || p.offerid || '';
-                return offerId === readOfferId || offerId.toLowerCase().includes('readarticle');
+                return offerId === READ_OFFER_ID || offerId.toLowerCase().includes('readarticle');
             });
 
             if (readPromo && readPromo.attributes) {
@@ -1259,31 +1335,42 @@
             // 活动进度统一用「积分」统计，只在活动任务执行时更新（见 runPromo），
             // 这里不再用卡片张数覆盖，避免出现 8/28（张）→ 35/35（分）的单位混用
 
+            // 先更新同步时间戳再渲染，这样徽章的「上次成功同步 hh:mm」不会差一轮
+            // 不再每轮打「✓ 数据已更新」：正常同步是常态，写日志只会把真正的问题淹掉。
+            markSyncOk();
             render();
-            const newStatus = `${state.level}-${state.points}-${state.searchCur}-${state.searchMax}`;
-            if (state.lastStatus !== newStatus) {
-                log(`✓ 数据已更新: Lv.${state.level} ${state.points}pts`);
-                state.lastStatus = newStatus;
-            }
 
             // 可领取积分检测（函数内部 5 分钟节流，避免每次刷新都多拉一个页面）
             checkClaimablePoints();
         } catch (e) {
             console.error('updateData error:', e);
             log(`⚠️ 获取数据出错: ${e.message}`);
+            markSyncStale('获取数据出错');
         } finally {
-            state.updating = false;
             state.updatingPromise = null;
         }
     })();
     return state.updatingPromise;
 }
-    // UI 渲染函数（精准适配原生节点映射）
     // 其他任务：同步「点击展开」的详情区（手机端无 hover，靠点击查看完整任务名）
     // 「前往完成」分工：行右侧按钮 → Rewards 活动总页；详情区内链接 → 当前这条任务的具体完成页
     const openUrl = (url) => {
         try { window.open(url, '_blank'); } catch (e) { location.href = url; }
     };
+
+    // =====================================================================
+    // 「去领取」直达入口
+    // 官方领取弹窗可以用 query 直接唤起：/dashboard?modal=pointsclaim
+    // 边界：只负责打开领取界面，绝不代用户提交领取（积分提交由人点）。
+    // =====================================================================
+    const CLAIM_URL = 'https://rewards.bing.com/dashboard?modal=pointsclaim';
+    if (nodes.claimGo) {
+        nodes.claimGo.onclick = (e) => {
+            if (e) e.stopPropagation();
+            // 始终新开标签：正在跑搜索/活动时点它，也不会把当前页的任务中断掉
+            openUrl(CLAIM_URL);
+        };
+    }
 
     // 未登录提示条：点击直接去 rewards.bing.com 登录
     if (nodes.loginTip) {
@@ -1321,11 +1408,9 @@
                 box.style.display = 'none';
             }
         }
-        // 选中列高亮
         if (nodes.punchBar) {
             [...nodes.punchBar.children].forEach((c, i) => c.classList.toggle('active', i === idx));
         }
-        // 行右侧「前往完成」始终指向活动总页，标题固定
         if (nodes.punchGo) {
             nodes.punchGo.title = '打开 Rewards 活动页（rewards.bing.com/earn）';
             nodes.punchGo.style.display = (state.quests || []).length ? '' : 'none';
@@ -1350,13 +1435,53 @@
             if (show && nodes.loginMsg) {
                 nodes.loginMsg.textContent = state.loginReason === 'blocked'
                     ? '⚠️ 读取 Rewards 数据失败，可能未登录或登录已失效'
-                    : '🔐 未登录 Microsoft Rewards，活动 / 打卡 / 可领取积分取不到数据';
+                    : state.loginReason === 'session'
+                        ? '🔐 读不到 Rewards 账号数据（点这里打开 rewards 登录一次）'
+                        : '🔐 未登录 Microsoft Rewards，活动 / 打卡 / 可领取积分取不到数据';
             }
         }
 
         // 1. 等级与积分（优先显示金牌/银牌名称）
         nodes.level.textContent = state.levelName || `Lv.${state.level}`;
         nodes.points.textContent = (state.points || 0).toLocaleString();
+        // 积分新鲜度徽章：常驻显示，三态 —— 绿「已同步」/ 灰「同步中」/ 红「未同步」。
+        if (nodes.sync) {
+            const lastOk = state.syncAt || state.syncStartedAt || 0;
+            const overdue = lastOk > 0 && Date.now() - lastOk > SYNC_STALE_MS;
+            // 明确失败 / 超时未成功 / 未登录，都算未同步
+            const bad = !!state.syncStale || overdue || state.needLogin;
+            const neverOk = !state.syncAt;   // 脚本刚起来还没成功过
+
+            let text, fg, bg, why;
+            if (state.syncBusy || (neverOk && !bad)) {
+                text = '⟳ 同步中';
+                fg = '#605e5c'; bg = '#f3f2f1';
+                why = '正在同步…';
+            } else if (bad) {
+                text = '⚠ 未同步';
+                fg = '#a4262c'; bg = '#fde7e9';
+                why = state.needLogin
+                    ? '未登录 Microsoft Rewards，或登录已失效'
+                    : (state.syncStale
+                        ? (state.syncReason || '数据未同步')
+                        : `已经 ${Math.floor((Date.now() - lastOk) / 60000)} 分钟没有成功同步`);
+            } else {
+                text = '✓ 已同步';
+                fg = '#0b6a34'; bg = '#dff6dd';
+                why = '数据已同步';
+            }
+
+            nodes.sync.textContent = text;
+            nodes.sync.style.color = fg;
+            nodes.sync.style.background = bg;
+            const at = state.syncAt
+                ? new Date(state.syncAt).toLocaleTimeString().slice(0, 5)
+                : '';
+            const tail = at ? `上次成功同步 ${at}。` : '';
+            nodes.sync.title = bad || state.syncBusy || neverOk
+                ? `${why}。${tail}点击可立即强制同步一次`
+                : `${why}（${at}）。点击可立即强制同步一次`;
+        }
         // 2. 搜索进度
         const pcCur = state.searchCur ?? state.pcCur ?? 0;
         const pcMax = state.searchMax ?? state.pcMax ?? 60;
@@ -1376,7 +1501,7 @@
         if (nodes.readBar) nodes.readBar.style.width = readMax ? `${(readCur / readMax) * 100}%` : '0%';
 
         // 5. 月度 / 周度打卡任务：右侧数值 = 今天不用再管的列数 / 列总数
-        //    绿色列 = 今天还能做但没做完 → 算"待办"，不计数
+        //    今天还能推进的列 = 待办，不计数
         //    灰色列 = 今天做不了（含已全部完成）→ 当成已完成计数，所以分母始终是全部任务
         if (nodes.punch) {
             const list = state.quests || [];
@@ -1385,54 +1510,63 @@
                 nodes.punch.textContent = '-';
                 nodes.punch.title = '';
             } else {
-                const todo = list.filter(r => !isDone(r) && r.canDo === true).length; // 绿色：今天待办
+                const todo = list.filter(r => !isDone(r) && r.canDo === true).length; // 今天待办
                 const settled = list.length - todo;                                  // 已完成 + 今天做不了
                 nodes.punch.textContent = `${settled}/${list.length}`;
                 nodes.punch.title = `今天待办 ${todo} 个（绿色）· 不用管 ${settled} 个（已完成 + 今天做不了）· 共 ${list.length} 个`;
             }
         }
-        // 5b. 其他任务：每列上方文字（周/月/限 + 进度），下方进度线；今天还能推进的文字绿色
+        // 5b. 其他任务：每列上方文字（周/月/限 + 进度），下方进度线；今天还能推进的文字高亮
         if (nodes.punchBar) {
             const list = state.quests || [];
-            const shortOf = (t) => (t === '每周' ? '周' : t === '月度' ? '月' : '限');
-            nodes.punchBar.innerHTML = '';
-            list.forEach((r, i) => {
-                const done = r.done || 0;
-                const total = r.total || 0;
-                const complete = r.complete || (total > 0 && done >= total);
-                const t = r.type || questTypeOf(r.title, r.id).label;
-                const label = r.title || r.id || '';
+            // render 每分钟至少一次，数据没变就别重建整块 DOM（选中态会闪、事件白绑一轮）。
+            // 用自定义属性而不是 dataset，冒烟桩里的假 DOM 也能挂。
+            const sig = JSON.stringify(list.map(r => [r.id, r.title, r.type, r.done, r.total, r.complete, r.canDo]));
+            if (nodes.punchBar._mrSig !== sig) {
+                nodes.punchBar._mrSig = sig;
+                nodes.punchBar.innerHTML = '';
+                const shortOf = (t) => (t === '每周' ? '周' : t === '月度' ? '月' : '限');
+                list.forEach((r, i) => {
+                    const done = r.done || 0;
+                    const total = r.total || 0;
+                    const complete = r.complete || (total > 0 && done >= total);
+                    const t = r.type || questTypeOf(r.title, r.id).label;
+                    const label = r.title || r.id || '';
 
-                const col = document.createElement('div');
-                col.className = 'mr-quest-col';
-                // 桌面端悬停看名称；手机端没有 hover，点击展开/收起完整名称
-                col.onclick = () => {
-                    state.questDetailIdx = state.questDetailIdx === i ? -1 : i;
-                    syncQuestDetail();
-                };
+                    const col = document.createElement('div');
+                    col.className = 'mr-quest-col';
+                    // 桌面端悬停看名称；手机端没有 hover，点击展开/收起完整名称
+                    col.onclick = () => {
+                        state.questDetailIdx = state.questDetailIdx === i ? -1 : i;
+                        syncQuestDetail();
+                    };
 
-                const lab = document.createElement('div');
-                lab.className = 'mr-quest-label' + (complete ? ' done' : r.canDo === true ? ' can' : '');
-                lab.textContent = `${shortOf(t)} ${done}/${total}`;
-                lab.title = `[${t}] ${label} (${done}/${total})${r.canDo === true ? ' - 今天可完成' : ''}`;
+                    const lab = document.createElement('div');
+                    lab.className = 'mr-quest-label' + (complete ? ' done' : r.canDo === true ? ' can' : '');
+                    lab.textContent = `${shortOf(t)} ${done}/${total}`;
+                    lab.title = `[${t}] ${label} (${done}/${total})${r.canDo === true ? ' - 今天可完成' : ''}`;
 
-                const track = document.createElement('div');
-                track.className = 'mr-quest-track';
-                const fill = document.createElement('div');
-                fill.className = 'mr-quest-fill' + (complete ? ' done' : '');
-                fill.style.width = total ? `${Math.min(100, (done / total) * 100)}%` : '0%';
-                track.appendChild(fill);
+                    const track = document.createElement('div');
+                    track.className = 'mr-quest-track';
+                    const fill = document.createElement('div');
+                    fill.className = 'mr-quest-fill' + (complete ? ' done' : '');
+                    fill.style.width = total ? `${Math.min(100, (done / total) * 100)}%` : '0%';
+                    track.appendChild(fill);
 
-                col.appendChild(lab);
-                col.appendChild(track);
-                nodes.punchBar.appendChild(col);
-            });
+                    col.appendChild(lab);
+                    col.appendChild(track);
+                    nodes.punchBar.appendChild(col);
+                });
+            }
             syncQuestDetail();
         }
 
         // 6. 活动任务
         if (nodes.promo) {
-            nodes.promo.textContent = `${state.promosDone || 0}/${state.promosTotal || 0}`;
+            // 读不到账号数据时别显示 0/0（会让人以为"今天真没有活动"），与打卡区的「-」保持一致
+            nodes.promo.textContent = (state.needLogin && !state.promosTotal)
+                ? '-'
+                : `${state.promosDone || 0}/${state.promosTotal || 0}`;
         }
         if (nodes.promoBar) {
             const done = state.promosDone || 0;
@@ -1449,7 +1583,14 @@
     }
 
     // Token 获取
-    // 获取/刷新 OAuth Access Token
+    // 未授权时 updateData 每分钟都会尝试一次拿 Token，日志按 10 分钟节流，避免整屏都是同一句
+    let tokenWarnAt = 0;
+    const logToken = (msg) => {
+        const now = Date.now();
+        if (now - tokenWarnAt < 10 * 60 * 1000) return;
+        tokenWarnAt = now;
+        log(msg);
+    };
     async function getAccessToken(opts = {}) {
         const forceRefresh = !!opts.forceRefresh;
         const now = Date.now();
@@ -1457,25 +1598,31 @@
         if (!forceRefresh && state.accessToken && state.accessTokenExpiresAt && now < (state.accessTokenExpiresAt - 60000)) {
             return state.accessToken;
         }
+        // 负缓存：已经确认拿不到 Token（未授权 / 未登录）时，5 分钟内不再发请求，
+        // 否则 updateData 每分钟都会去 login.live.com 试一次，白跑请求还写日志。
+        // forceRefresh（用户点了授权 / 手动重试）会绕过这个限制。
+        if (!forceRefresh && state.tokenFailAt && now - state.tokenFailAt < 5 * 60 * 1000) {
+            return null;
+        }
 
         if (state.tokenPromise) {
             return state.tokenPromise;
         }
 
-        state.tokenPromise = (async () => {
+        const pending = (async () => {
             try {
                 if (forceRefresh) {
                     state.accessToken = null;
                     state.accessTokenExpiresAt = 0;
                 }
 
-                let refreshToken = GM_getValue('refresh_token', '');//test
+                let refreshToken = GM_getValue('refresh_token', '');
                 let body = '';
 
                 if (refreshToken) {
                     body = `client_id=0000000040170455&refresh_token=${encodeURIComponent(refreshToken)}&scope=service::prod.rewardsplatform.microsoft.com::MBI_SSL&grant_type=REFRESH_TOKEN`;
                 } else {
-                    log('🔑 正在获取微软活动 Token...');
+                    logToken('🔑 正在获取微软活动 Token...');
                     
                     // 1. 尝试静默获取
                     let code = await checkAuth();
@@ -1497,7 +1644,7 @@
 
                     // 3. 仍然没有可用 code 时，弹出手动授权提示面板
                     if (!code) {
-                        log('⚠️ 静默授权失败，请点击面板中的“获取授权码”链接手动授权');
+                        logToken('⚠️ 静默授权失败，请点击面板中的「获取授权码」手动授权');
                         if (nodes.boxAuth) nodes.boxAuth.style.display = 'block';
                         return null;
                     }
@@ -1517,6 +1664,7 @@
                 const data = typeof res === 'string' ? JSON.parse(res) : res;
 
                 if (data.access_token) {
+                    state.tokenFailAt = 0;
                     state.accessToken = data.access_token;
                     state.accessTokenExpiresAt =
                         Date.now() + (Number(data.expires_in) || 3600) * 1000;
@@ -1525,8 +1673,7 @@
                         GM_setValue('refresh_token', data.refresh_token);
                     }
 
-                    log('🔑 活动 Token 建立成功');
-                    // 走 code 授权成功：清掉面板里的授权码残留，避免重复使用一次性 code
+                    // 拿到 Token 属于正常流程，不再单独打日志（每次刷新都会来一遍，只会刷屏）
                     if (!refreshToken) {
                         try {
                             GM_setValue('auth_code', '');
@@ -1551,13 +1698,19 @@
                 }
             } catch (e) {
                 log('❌ Auth Error: ' + e.message);
-            } finally {
-                state.tokenPromise = null;
             }
+            state.tokenFailAt = Date.now();
             return null;
         })();
 
-        return state.tokenPromise;
+        state.tokenPromise = pending;
+        // 只清「自己仍是当前在途请求」的情况：refresh_token 失效分支里会创建新的
+        // tokenPromise，外层 finally 若无条件置 null，会把内层那个请求一起抹掉，
+        // 于是后续并发调用会重复发起取 token 请求。
+        pending.finally(() => {
+            if (state.tokenPromise === pending) state.tokenPromise = null;
+        }).catch(() => { });
+        return pending;
     }
     // =========================================================================
     // 🧩 Rewards 新版站点通道（Next.js Server Action）
@@ -1643,14 +1796,11 @@
     // —— 页面抓取健壮性：登录页 / 错误页识别 + 分层降级 ——
     // Rewards 在 cookie 失效、边缘风控、区域跳转时会返回登录页或极短的错误页，
     // 这类响应不能当成"今日没有活动"来解析，否则面板会静默清零。
+    // judge() 已经先调过 detectLoginWall()，这里只补「短 JSON 错误体」这一种情况，
     function looksLikeLoginPage(html) {
         const s = String(html || '');
         if (!s) return true;
-        if (s.length < 4000) {
-            if (detectLoginWall(s)) return true;
-            if (/^\s*[\[{]/.test(s)) return true; // 纯 JSON 错误体（如 401 响应）
-        }
-        return false;
+        return s.length < 4000 && /^\s*[\[{]/.test(s);
     }
 
     // 登录墙判定：只认登录页独有的特征，避免把正常页面里的「登录」链接误判成未登录。
@@ -1666,6 +1816,36 @@
         return false;
     }
 
+    // —— 账号数据锚点 ——
+    // 只靠「像不像登录页」判断不出未登录：实测未登录访 https://rewards.bing.com/
+    // 返回的是 200 + 258KB 的「关于 – Microsoft Rewards」营销页，既没有 i0116/loginfmt，
+    // 体积又远超 looksLikeLoginPage 的 4000 字节上限，于是被当成正常页接收 → 解析 0 条。
+    // 登录后 dash 必有 dailySetItems、earn 必有 activityCards，这两类键才是可靠判据。
+    // 注意别用 "balance": 当锚点：那张「关于」页里有个已登出的占位对象
+    // {"balance":"$undefined","level":"$undefined"}，会把未登录误判成已登录（实测踩过）。
+    const ACCOUNT_ANCHORS = {
+        dash: ['"dailySetItems"', '"userStatus"', '"activityCards"', 'punchcard'],
+        earn: ['"activityCards"', 'punchcard', '"dailySetItems"', '"userStatus"']
+    };
+    // 最近一次抓取结论：dash / earn 是并发抓的，一面成功一面失败时红条会每分钟闪一次。
+    // 记录「谁最近失败了」，另一面成功时先别急着撤提醒；120 秒后视为过期，避免永远卡住。
+    const lastSeen = { dash: { v: '', at: 0 }, earn: { v: '', at: 0 } };
+
+    function hasAccountData(html, kind) {
+        const s = String(html || '').replace(/\\"/g, '"');
+        if (!s) return false;
+        const anchors = ACCOUNT_ANCHORS[kind];
+        if (!anchors) return true; // quest 详情页等不做判定，保持原行为
+        return anchors.some(a => s.includes(a));
+    }
+
+    // 日志用：统计锚点出现次数，一眼区分「没登录」和「站点改版」
+    function anchorStat(html) {
+        const s = String(html || '').replace(/\\"/g, '"');
+        const n = (k) => s.split(k).length - 1;
+        return `dailySetItems:${n('"dailySetItems"')} activityCards:${n('"activityCards"')} userStatus:${n('"userStatus"')}`;
+    }
+
     /**
      * 抓 Rewards 页面 HTML，按可靠性分层降级：
      *   ① 站内 fetch / 普通 GM 请求（正常路径）
@@ -1673,22 +1853,78 @@
      *   ③ 当前页面就是这个地址时，直接读渲染后的 DOM（完全离线，救急用）
      * 返回 { html, from }，from 供日志与诊断定位。
      */
-    async function fetchRewardsPage(url, ua) {
+    // 页面 HTML 短缓存：初始化阶段 updateData / refreshPromoScore / readPunchcardProgress
+    // 会连续抓同一批页面（dash、earn 各两次），45 秒内复用能省掉一半请求。
+    const pageCache = new Map();
+    const PAGE_CACHE_TTL = 45 * 1000;
+    // 失败负缓存：未登录时 dash 会回 258KB 的营销页，一轮刷新里 dash/earn 各被抓好几次，
+    // 没有负缓存会重复下载几百 KB。60 秒内直接复用失败结论。
+    const failCache = new Map();
+    const FAIL_CACHE_TTL = 60 * 1000;
+    const clearPageCache = () => { pageCache.clear(); failCache.clear(); };
+
+    // 同一页面的并发抓取合并成一个请求：refreshPromoScore / readPunchcardProgress /
+    // recoverFromLogin 会在同一瞬间抓 earn 页，缓存还没写入就各自发一遍。
+    // force（诊断用）不复用在途请求，保证拿到的是新抓的页面。
+    const inflightPages = new Map();
+    async function fetchRewardsPage(url, ua, opts = {}) {
+        if (opts.force) return fetchRewardsPageInner(url, ua, opts);
+        const key = String(url || '').split('?')[0].replace(/\/+$/, '') + '|' + (ua || '');
+        if (inflightPages.has(key)) return inflightPages.get(key);
+        const p = fetchRewardsPageInner(url, ua, opts);
+        inflightPages.set(key, p);
+        try { return await p; } finally { inflightPages.delete(key); }
+    }
+
+    async function fetchRewardsPageInner(url, ua, opts = {}) {
         const target = String(url || '').split('?')[0].replace(/\/+$/, '');
         // 只有 dashboard / earn 两个主页面参与「是否未登录」判定；
         // quest 详情页走 App UA，偶发风控也会吐登录页，不能据此判定账号未登录
         const isMain = target === REWARDS.dash || target === REWARDS.earn;
+        const kind = target === REWARDS.dash ? 'dash' : (target === REWARDS.earn ? 'earn' : '');
         let loginWall = false;
+        let noData = false;
+        // ua 参与键：quest 详情页带 Rewards 客户端 UA 才会解锁子项，内容与普通 UA 不同
+        const cacheKey = target + '|' + (ua || '');
+        if (!opts.force) {
+            const hit = pageCache.get(cacheKey);
+            if (hit && hit.html && Date.now() - hit.at < PAGE_CACHE_TTL) {
+                return { html: hit.html, from: hit.from + '+cache' };
+            }
+            const neg = failCache.get(cacheKey);
+            if (neg && Date.now() - neg.at < FAIL_CACHE_TTL) {
+                // 命中负缓存也要把提醒重新点亮，否则登录提示会被这 60 秒的空窗吞掉；
+                // reason='struct' 是"页面结构问题、登录正常"，不能拿去点红条
+                if (isMain && neg.reason !== 'struct') markNeedLogin(target, neg.reason);
+                return { html: '', from: 'none+cache', login: isMain && neg.reason !== 'struct' };
+            }
+        }
         // 主页面这次真的拿到了内容 → 说明登录态正常，撤掉提醒
         const ok = (html, from) => {
-            if (isMain) clearNeedLogin();
+            if (isMain) { lastSeen[kind] = { v: 'ok', at: Date.now() }; clearNeedLogin(kind); }
+            failCache.delete(cacheKey);
+            if (html) pageCache.set(cacheKey, { at: Date.now(), html, from });
             return { html, from };
+        };
+        // 判定一层抓取结果：必须「不是登录页」且「含账号数据」才算成功。
+        // 只看前者会漏掉未登录时返回的那张 200 + 258KB「关于」营销页。
+        const judge = (html) => {
+            if (!html) return 'empty';
+            if (detectLoginWall(html) || looksLikeLoginPage(html)) return 'login';
+            if (!hasAccountData(html, kind)) return 'nodata';
+            return 'ok';
+        };
+        const handle = (html, from) => {
+            const v = judge(html);
+            if (v === 'ok') return ok(html, from);
+            if (v === 'login') loginWall = true;
+            else if (v === 'nodata') noData = true;
+            return null;
         };
 
         try {
-            const html = await getRewardsHtml(url, ua);
-            if (detectLoginWall(html)) loginWall = true;
-            else if (!looksLikeLoginPage(html)) return ok(html, 'fetch');
+            const r = handle(await getRewardsHtml(url, ua), 'fetch');
+            if (r) return r;
         } catch (e) { /* 继续降级 */ }
 
         try {
@@ -1699,44 +1935,99 @@
             };
             if (cookie) headers.cookie = cookie;
             const html = await gmRequest({ method: 'GET', url, headers, retries: 1 }).catch(() => '');
-            if (detectLoginWall(html)) loginWall = true;
-            else if (!looksLikeLoginPage(html)) return ok(html, 'gm');
+            const r = handle(html, 'gm');
+            if (r) return r;
         } catch (e) { /* 继续降级 */ }
 
         try {
             const cur = (location.origin + location.pathname).replace(/\/+$/, '');
             if (cur === target) {
-                const dom = document.documentElement?.outerHTML || '';
-                if (detectLoginWall(dom)) loginWall = true;
-                else if (!looksLikeLoginPage(dom)) return ok(dom, 'dom');
+                const r = handle(document.documentElement?.outerHTML || '', 'dom');
+                if (r) return r;
             }
         } catch (e) { /* ignore */ }
 
-        if (isMain && loginWall) markNeedLogin(target);
-        return { html: '', from: 'none', login: loginWall };
+        if (isMain && (loginWall || noData)) {
+            // 另一面主页面刚拿到账号数据 → 登录态没问题，这次只是本页结构/区域差异。
+            // 这种时候亮红条会变成"永远亮着但数据其实好的"误报，只记日志。
+            const other = kind === 'dash' ? 'earn' : 'dash';
+            const o = lastSeen[other];
+            const otherOk = o && o.v === 'ok' && Date.now() - o.at < 120 * 1000;
+            const structural = !loginWall && otherOk;
+            // 'struct' 不参与"别撤提醒"的判定（那是登录问题的信号，这是站点改版）
+            lastSeen[kind] = { v: structural ? 'struct' : 'fail', at: Date.now() };
+            if (structural) {
+                warnStructure(kind);
+                failCache.set(cacheKey, { at: Date.now(), reason: 'struct' });
+            } else {
+                // loginWall=拿到登录页；noData=拿到 200 页面但没有账号数据（多为 rewards 会话未建立）
+                markNeedLogin(target, loginWall ? '' : 'session');
+                // 只缓存"有明确结论"的失败；纯网络错误不缓存，下次还要重试
+                failCache.set(cacheKey, { at: Date.now(), reason: loginWall ? '' : 'session' });
+            }
+        }
+        return { html: '', from: 'none', login: loginWall || noData };
     }
 
     // —— 未登录提醒 ——
     // 抓到登录页时：面板顶部点亮提示条 + 日志说明一次（恢复前不重复刷屏）
     let loginWarnAt = 0;
-    function markNeedLogin(target) {
-        if (state.needLogin) return; // 已经亮着，不重复刷日志 / 重绘
+    // 结论只允许往上细化：blocked（笼统读取失败）→ dash/earn（拿到登录页）→ session（读不到账号数据）。
+    // 反方向不覆盖，避免"更具体的原因"被"读取失败"顶掉。
+    const LOGIN_RANK = { blocked: 0, dash: 1, earn: 1, session: 2 };
+    function markNeedLogin(target, reason) {
+        const r = reason || (target === REWARDS.earn ? 'earn' : 'dash');
+        if (state.needLogin) {
+            if ((LOGIN_RANK[r] ?? 1) <= (LOGIN_RANK[state.loginReason] ?? 1)) return; // 不重复刷、不降级
+            state.loginReason = r;
+            render(); // 只换文案，不再刷日志
+            return;
+        }
         state.needLogin = true;
-        state.loginReason = target === REWARDS.earn ? 'earn' : 'dash';
+        state.loginReason = r;
         render();
         const now = Date.now();
         if (now - loginWarnAt < 10 * 60 * 1000) return;
         loginWarnAt = now;
+        if (state.loginReason === 'session') {
+            // 典型场景：Bing 已登录（等级/积分/搜索都正常），但从没打开过 rewards.bing.com，
+            // 站点返回的是「关于 Microsoft Rewards」营销页，没有 dailySetItems/activityCards
+            log('🔐 已登录 Bing，但读不到 rewards.bing.com 的账号数据（会话未建立，或站点改版）：活动 / 打卡 / 可领取积分取不到数据');
+            log('💡 点面板上的「去登录 →」打开一次 https://rewards.bing.com 完成登录；回到本页后会自动重新拉取');
+            return;
+        }
         log('🔐 未登录 Microsoft Rewards（或登录已失效），活动 / 打卡 / 可领取积分取不到数据');
         log('💡 点面板上的「去登录 →」，或手动打开 https://rewards.bing.com 登录；回到本页后脚本会自动重新拉取');
     }
-    function clearNeedLogin() {
+    function clearNeedLogin(kind) {
         if (!state.needLogin) return;
+        // 另一面主页面最近一次是失败（120 秒内）时先别撤提醒：
+        // dash / earn 是并发抓的，一面成功一面失败会让红条每分钟闪一次
+        const other = kind === 'dash' ? 'earn' : (kind === 'earn' ? 'dash' : '');
+        if (other) {
+            const o = lastSeen[other];
+            if (o && o.v === 'fail' && Date.now() - o.at < 120 * 1000) return;
+        }
         state.needLogin = false;
         state.loginReason = '';
         pageFailStreak = 0;
         render();
         log('✅ 登录状态已恢复，数据重新同步中');
+    }
+
+    // ===== 积分同步状态徽章 =====
+    // 积分数字左侧常驻徽章：绿「✓ 已同步」/ 灰「⟳ 同步中」/ 红「⚠ 未同步」，点一下强制同步。
+    // render 由调用方负责，避免一轮画两次。
+    function markSyncOk() {
+        state.syncStale = false;
+        state.syncReason = '';
+        state.syncAt = Date.now();
+    }
+    function markSyncStale(reason) {
+        const changed = !state.syncStale || state.syncReason !== reason;
+        state.syncStale = true;
+        state.syncReason = reason || '数据未同步';
+        if (changed) render();
     }
 
     // 连页面都抓不到（网络 / CORS / 风控）时的兜底提醒：连续两轮才点亮，避免一次抖动就报警
@@ -1753,6 +2044,8 @@
     // 抓取失败提示做节流：同一地址 10 分钟内只提示一次，避免每分钟刷屏
     const fetchWarnAt = {};
     function warnFetchFail(label, url) {
+        // 登录提示已经亮着时不再重复喊「获取失败」：同一个原因的两种说法只会刷屏
+        if (state.needLogin) return;
         const key = label || url;
         const now = Date.now();
         if (fetchWarnAt[key] && now - fetchWarnAt[key] < 10 * 60 * 1000) return;
@@ -1762,13 +2055,36 @@
         console.warn('[Rewards] fetch fail:', label, url);
     }
 
+    // updateData 每分钟跑一次：彻底取不到数据时按 10 分钟节流提示，避免挂机刷屏
+    let dataFailWarnAt = 0;
+    function warnDataFail() {
+        // 这一轮没拿到有效的 dash 数据 → 积分停在旧值，面板上亮 ⚠
+        markSyncStale('读不到 Rewards 数据');
+        const now = Date.now();
+        if (now - dataFailWarnAt < 10 * 60 * 1000) return;
+        dataFailWarnAt = now;
+        log('❌ 获取数据失败，请确认已登录 rewards.bing.com');
+        log('💡 若一直失败：先打开 https://rewards.bing.com 登录，再回到本页（脚本会自动重拉）');
+    }
+
     // 页面抓到了但解析为空（容器名/结构变化）时的提示，同样节流
     const parseWarnAt = {};
-    function warnParseEmpty(label) {
+    function warnParseEmpty(label, detail) {
         const now = Date.now();
         if (parseWarnAt[label] && now - parseWarnAt[label] < 30 * 60 * 1000) return;
         parseWarnAt[label] = now;
-        log(`🟡 ${label}：页面已取到但没解析出条目（可能是站点结构变化或今天确实没有任务）`);
+        // detail 带上锚点计数：全 0 = 拿到的根本不是登录后的页面；有值却不解析 = 站点改版
+        log(`🟡 ${label}：页面已取到但没解析出条目（可能是站点结构变化或今天确实没有任务）${detail ? `｜锚点 ${detail}` : ''}`);
+    }
+
+    // 页面没账号数据、但另一面主页正常 → 登录态没问题，多半是站点改版。只提示一次。
+    let structWarnAt = 0;
+    function warnStructure(kind) {
+        const now = Date.now();
+        if (now - structWarnAt < 30 * 60 * 1000) return;
+        structWarnAt = now;
+        log(`🟡 ${kind === 'dash' ? 'dashboard' : 'earn'} 页面里没有账号数据，但另一面正常：登录没问题，疑似站点结构变化`);
+        log('💡 若活动/打卡数字明显偏少，点「🔍 导出 Rewards 诊断日志」反馈');
     }
 
     async function postServerAction({ url, actionId, dpl, referer, body, ua }) {
@@ -1980,7 +2296,11 @@
             idx = idEnd;
             if (!id || seen.has(id)) continue;
             let depth = 0, start = -1;
-            for (let i = idx; i >= 0; i--) {
+            // 回扫设上限，但要留足余量：offerId 未必是对象第一个字段，卡片里常带长描述/长图片 URL，
+            // 起点可能离它几 KB。上限取 32KB —— 正常卡片（几百字节）几十个字符就找到起点，成本不变；
+            // 只有真找不到起点时才会多扫，仍是有界计算，不会回到"每个 offerId 扫回文件头"的卡死。
+            const backFloor = Math.max(0, idx - 32768);
+            for (let i = idx; i >= backFloor; i--) {
                 const c = clean[i];
                 if (c === '}') depth++;
                 else if (c === '{') {
@@ -2286,18 +2606,8 @@
     async function dapiActivity(token, { type, attributes = {}, region }) {
         const res = await gmRequest({
             method: 'POST',
-            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
-            headers: {
-                'content-type': 'application/json; charset=UTF-8',
-                'user-agent': CONFIG.ua.mobile,
-                'authorization': `Bearer ${token}`,
-                'x-rewards-appid': CONFIG.mobileApi.appId,
-                'x-rewards-ismobile': 'true',
-                'x-rewards-country': region,
-                'x-rewards-language': 'zh',
-                'x-rewards-partnerid': 'startapp',
-                'x-rewards-flights': 'rwgobig'
-            },
+            url: DAPI_ACTIVITY_URL,
+            headers: dapiHeaders(token, region),
             data: JSON.stringify({
                 amount: 1,
                 country: region,
@@ -2310,22 +2620,9 @@
         return typeof res === 'string' ? JSON.parse(res) : res;
     }
 
-    async function getDapiPromotions(token, region) {
-        const res = await gmRequest({
-            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
-            headers: {
-                'content-type': 'application/json; charset=UTF-8',
-                'user-agent': CONFIG.ua.mobile,
-                'authorization': `Bearer ${token}`,
-                'x-rewards-appid': CONFIG.mobileApi.appId,
-                'x-rewards-ismobile': 'true',
-                'x-rewards-country': region,
-                'x-rewards-language': 'zh',
-                'x-rewards-partnerid': 'startapp',
-                'x-rewards-flights': 'rwgobig'
-            }
-        });
-        const data = typeof res === 'string' ? JSON.parse(res) : res;
+    async function getDapiPromotions(token, region, force = false) {
+        // force=true 用于「上报后复核」，必须绕过缓存；其余场合复用同一轮的响应
+        const data = await getDapiMe(token, region, !force);
         return data?.response?.promotions || null;
     }
 
@@ -2376,11 +2673,16 @@
                 } catch (e) {
                     log(`⚠️ APP 打卡上报失败：${e.message}`);
                 }
-                if (i < pending.length - 1) await sleep(randomRange(2500, 5000));
+                if (i < pending.length - 1) {
+                    const gap = randomRange(4000, 10000);
+                    log(`☕ 随机等待 ${(gap / 1000).toFixed(1)} 秒（下一项打卡）...`);
+                    await sleep(gap);
+                }
             }
-            // 复核：以服务端进度为准
-            await sleep(4000);
-            const after = await getDapiPromotions(token, region);
+            // 复核：以服务端进度为准（稍等一拍再查，避免刚上报就回查拿到旧值）
+            await sleep(randomRange(3000, 6000));
+            // 上报后复核必须强制刷新，不能吃 30 秒缓存，否则拿到的还是上报前的旧值
+            const after = await getDapiPromotions(token, region, true);
             if (after) {
                 const gained = Math.max(0, pointsOf(after.filter(p => isItem(p) && isToday(p))) - before);
                 log(gained > 0
@@ -2392,14 +2694,13 @@
         }
     }
 
-    //签到
     const runSign = async () => {
         nodes.btnSign.disabled = true;
         markBusy(1);
         await waitWhilePaused();
         log('⏳ 正在尝试 App 移动端签到...');
 
-        const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
+        const region = currentRegion();
 
         // 优先获取动态 offerId，无则使用 Sapphire 默认 ID
         let offerId = "Gamification_Sapphire_DailyCheckIn";
@@ -2417,30 +2718,10 @@
         }
 
         try {
-            const res = await withAccessTokenRequest(token => gmRequest({
-                method: 'POST',
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
-                headers: {
-                    'content-type': 'application/json; charset=UTF-8',
-                    'user-agent': CONFIG.ua.mobile,
-                    'authorization': `Bearer ${token}`,
-                    'x-rewards-appid': CONFIG.mobileApi.appId,
-                    'x-rewards-ismobile': 'true',
-                    'x-rewards-country': region,
-                    'x-rewards-language': 'zh',
-                    'x-rewards-partnerid': 'startapp',
-                    'x-rewards-flights': 'rwgobig'
-                },
-                data: JSON.stringify({
-                    amount: 1,
-                    id: generateDapiId(),
-                    type: 103,
-                    country: region,
-                    channel: 'SAAndroid',
-                    attributes: {
-                        offerid: offerId
-                    }
-                })
+            const res = await withAccessTokenRequest(token => dapiActivity(token, {
+                type: 103,
+                attributes: { offerid: offerId },
+                region
             }));
 
             if (res) {
@@ -2478,37 +2759,23 @@
     };
     nodes.btnSign.onclick = runSign;
 
-    
-    // 阅读
+    // 阅读（按钮兼作停止键：再点一次置 readRunning=false，本篇结束后退出循环）
     const runRead = async () => {
-    nodes.btnRead.disabled = true;
+    nodes.btnRead.textContent = '⏹ 停止阅读';
     state.readRunning = true;
     markBusy(1);
     await waitWhilePaused();
     log('⏳ 开始阅读任务...');
 
-    const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
-    const readOfferId = 'ENUS_readarticle3_30points';
+    const region = currentRegion();
 
     try {
         // 2. 获取当前真实阅读进度
-        const info = await withAccessTokenRequest(token => gmRequest({
-            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
-            headers: {
-                'authorization': `Bearer ${token}`,
-                'user-agent': CONFIG.ua.mobile,
-                'x-rewards-appid': CONFIG.mobileApi.appId,
-                'x-rewards-ismobile': 'true',
-                'x-rewards-country': region,
-                'x-rewards-language': 'zh',
-                'x-rewards-partnerid': 'startapp',
-                'x-rewards-flights': 'rwgobig'
-            }
-        }));
+        const info = await withAccessTokenRequest(token => getDapiMe(token, region));
 
         if (info) {
             const d = typeof info === 'string' ? JSON.parse(info) : info;
-            const p = d.response?.promotions?.find(x => x.attributes?.offerid === readOfferId);
+            const p = d.response?.promotions?.find(x => x.attributes?.offerid === READ_OFFER_ID);
 
             if (p && p.attributes) {
                 let cur = parseInt(p.attributes.progress) || 0;
@@ -2528,52 +2795,65 @@
                     log(`📖 当前阅读进度 ${cur}/${max}，准备刷文章...`);
 
                     let currentArticleIdx = Math.floor(cur / step);
+                    // 连续未记账计数：dapi 一直返回"没加分"时不要死循环重发
+                    let readFailStreak = 0;
                     while (cur < max) {
-                       // 方式一：改用已有的运行状态判定
-                        if (!state.readRunning && !state.allRunning) break;
+                        // readRunning 只由本任务自己维护：按钮再点一次即可停止，
+                        // 不再混进恒为 true 的 allRunning（旧判定永远不成立）。
+                        if (!state.readRunning) break;
 
                         await waitWhilePaused();
                         currentArticleIdx++;
                         log(`📖 正在阅读第 ${currentArticleIdx}/${totalArticles} 篇文章 (进度: ${cur}/${max})...`);
 
-                        const res = await withAccessTokenRequest(token => gmRequest({
-                            method: 'POST',
-                            url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
-                            headers: {
-                                'content-type': 'application/json; charset=utf-8',
-                                'user-agent': CONFIG.ua.mobile,
-                                'authorization': `Bearer ${token}`,
-                                'x-rewards-appid': CONFIG.mobileApi.appId,
-                                'x-rewards-ismobile': 'true',
-                                'x-rewards-country': region,
-                                'x-rewards-language': 'zh',
-                                'x-rewards-partnerid': 'startapp',
-                                'x-rewards-flights': 'rwgobig'
-                            },
-                            data: JSON.stringify({
-                                amount: 1,
-                                country: region,
-                                id: generateDapiId(),
-                                type: 101,
-                                channel: 'SAAndroid',
-                                attributes: { offerid: readOfferId }
-                            })
+                        const res = await withAccessTokenRequest(token => dapiActivity(token, {
+                            type: 101,
+                            attributes: { offerid: READ_OFFER_ID },
+                            region
                         })).catch(() => null);
 
+                        // 只有服务端明确记账（p > 0）才算这一篇成功。
+                        // 以前这里只看 "有没有响应"：dapi 返回 2xx 但 code≠0 / isDuplicate / 0 分时
+                        // 也被记成「🎉 阅读成功 +3」，进度和总积分都会虚高。
+                        let gained = 0;
+                        let duplicate = false;
                         if (res) {
-                            // 阅读成功后：进度 +step(3)，积分固定 +3
+                            let d = res;
+                            if (typeof d === 'string') {
+                                try { d = JSON.parse(d); } catch { d = null; }
+                            }
+                            if (d && (d.code == null || Number(d.code) === 0)) {
+                                const act = d.response?.activity;
+                                gained = Number(act?.p ?? act?.points ?? 0) || 0;
+                                duplicate = !!d.response?.isDuplicate && gained === 0;
+                            }
+                        }
+
+                        if (gained > 0) {
                             cur = Math.min(max, cur + step);
-                            state.points = (state.points || 0) + 3;
+                            state.points = (state.points || 0) + gained;
                             state.readCur = cur;
                             render();
-
-                            log(`🎉 第 ${currentArticleIdx}/${totalArticles} 篇阅读成功 (+3积分) | 进度: ${state.readCur}/${max} | 当前总积分: ${state.points}`);
+                            readFailStreak = 0;
+                            log(`🎉 第 ${currentArticleIdx}/${totalArticles} 篇阅读成功 (+${gained}积分) | 进度: ${state.readCur}/${max} | 当前总积分: ${state.points}`);
+                        } else if (duplicate) {
+                            // 服务端说这篇已经记过账：本地推进一格，避免同一篇无限重发
+                            cur = Math.min(max, cur + step);
+                            state.readCur = cur;
+                            render();
+                            readFailStreak = 0;
+                            log(`ℹ️ 第 ${currentArticleIdx}/${totalArticles} 篇已在此前完成（+0 分），继续下一篇`);
                         } else {
-                            log(`⚠️ 第 ${currentArticleIdx}/${totalArticles} 篇上报未收到有效响应，继续下一篇...`);
+                            // 没记账：本地不推进，连续失败就停，避免白跑
+                            readFailStreak++;
+                            log(`⚠️ 第 ${currentArticleIdx}/${totalArticles} 篇上报未生效（连续 ${readFailStreak} 次）`);
+                            if (readFailStreak >= 3) {
+                                log('🛑 连续 3 篇阅读未生效，已停止：请确认登录状态或稍后再试');
+                                break;
+                            }
                         }
 
                         if (cur < max) {
-                            // 👈 优化：使用 CONFIG 中的随机时间，并打印休眠日志
                             const readDelay = typeof randomRange === 'function' 
                                 ? randomRange(CONFIG.read.minDelay, CONFIG.read.maxDelay) 
                                 : 10000;
@@ -2589,7 +2869,7 @@
                     }
                 }
             } else {
-                log(`⚠️ 未找到阅读任务卡片 (offerid: ${readOfferId})`);
+                log(`⚠️ 未找到阅读任务卡片 (offerid: ${READ_OFFER_ID})`);
             }
         } else {
             log('❌ 获取阅读进度失败');
@@ -2601,20 +2881,29 @@
         console.error('[Rewards 阅读异常]:', e);
     } finally {
     state.readRunning = false;
-    nodes.btnRead.disabled = false;
+    nodes.btnRead.textContent = '📖 阅读';
     markBusy(-1);
     }
 };
 
-nodes.btnRead.onclick = runRead;
+nodes.btnRead.onclick = () => {
+    if (state.readRunning) {
+        state.readRunning = false;
+        log('⏹️ 已请求停止阅读，当前这篇完成后退出');
+        return;
+    }
+    runRead();
+};
 
     const runPromo = async () => {
         nodes.btnPromo.disabled = true;
         markBusy(1);
         await waitWhilePaused();
         log('⏳ 开始执行活动任务...');
+        // 手动触发时以页面此刻的真实状态为准，不吃 45 秒缓存
+        clearPageCache();
         try {
-            const region = (state.country || dashboard?.userStatus?.country || 'cn').toLowerCase();
+            const region = currentRegion();
             const accessToken = await getAccessToken();
 
             // 1) 新版站点的活动数据就在页面 HTML 的 flight 数据里，直接取 dashboard + earn
@@ -2624,6 +2913,8 @@ nodes.btnRead.onclick = runRead;
             } catch (e) {
                 log('⚠️ dashboard 页面获取失败：' + e.message);
             }
+            // 两个主页面挨着抓太整齐（真实浏览是一页看完再点下一页）
+            if (dashHtml) await sleep(randomRange(800, 2000));
             try {
                 earnHtml = (await fetchRewardsPage(REWARDS.earn)).html;
             } catch (e) {
@@ -2643,7 +2934,6 @@ nodes.btnRead.onclick = runRead;
             state.promosDone = stat.dashDone + stat.earnDone;
             state.promosTotal = stat.dashTotal + stat.earnTotal;
             render();
-            await readPunchcardProgress();
             if (stat.earnParseFailed) log('🟡 earn 页面活动结构异常，未能解析活动卡片');
             // 一行结论：跳过原因合并，避免逐条刷屏
             const skipped = [];
@@ -2690,6 +2980,12 @@ nodes.btnRead.onclick = runRead;
                                 const err = new Error('服务端返回 0 分（未记账）');
                                 err.taskLevel = true;
                                 lastWebErr = err;
+                            } else if (/<!doctype\s+html|<html|login\.live\.com|id="i0116"/i.test(String(respText || '').slice(0, 500))) {
+                                // 回执是网页而不是 flight 数据：多半被重定向到登录页了，
+                                // 以前这种"有响应"会被当成交卷成功，但服务端根本没记账
+                                const err = new Error('交卷被重定向到登录页（未记账）');
+                                err.taskLevel = true;
+                                lastWebErr = err;
                             } else {
                                 posted = true;
                             }
@@ -2701,7 +2997,7 @@ nodes.btnRead.onclick = runRead;
                                 actionInfo = await getRewardsAction([dashHtml, earnHtml]);
                                 continue;
                             }
-                            if (attempt < 2) await sleep(randomRange(1800, 3500));
+                            if (attempt < 2) await sleep(randomRange(3000, 6000));
                         }
                     }
                     // 通道二：dapi APP 通道兜底（幂等、即时记账、不校验 Origin）
@@ -2734,7 +3030,11 @@ nodes.btnRead.onclick = runRead;
                             log(`🟡 交卷通道不可用（${e ? e.message : '网络错误'}），本次跳过剩余活动${crossHostHint()}`);
                         }
                     }
-                    if (!channelDown && i < tasks.length - 1) await sleep(randomRange(2500, 5000));
+                    if (!channelDown && i < tasks.length - 1) {
+                        const gap = randomRange(5000, 12000);
+                        log(`☕ 随机等待 ${(gap / 1000).toFixed(1)} 秒（下一项活动）...`);
+                        await sleep(gap);
+                    }
                 }
             }
 
@@ -2759,9 +3059,7 @@ nodes.btnRead.onclick = runRead;
             // 活动进度统一按积分统计；持久化到当天，刷新页面后数字保持一致
             state.promosDone = stat.dashDone + stat.earnDone;
             state.promosTotal = stat.dashTotal + stat.earnTotal;
-            try {
-                GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
-            } catch { }
+            savePromoScore();
             render();
             // 活动做完后可能产生新的可领取积分，强制检测一次（不阻塞主流程）
             checkClaimablePoints(null, true);
@@ -2783,10 +3081,13 @@ nodes.btnRead.onclick = runRead;
             ]);
             const dashHtml = dashRes.html, earnHtml = earnRes.html;
             if (!dashHtml && !earnHtml) {
-                // 抓不到页面时不要把进度清零，保留上次结果并提示一次
-                warnFetchFail('活动', REWARDS.earn);
-                pageFailStreak++;
-                if (pageFailStreak >= 2) markDataBlocked();
+                // 抓不到页面时不要把进度清零，保留上次结果并提示一次；
+                // 已经亮着登录提示时不再重复喊「获取失败」，同一个原因喊两遍只会刷屏
+                if (!state.needLogin) {
+                    warnFetchFail('活动', REWARDS.earn);
+                    pageFailStreak++;
+                    if (pageFailStreak >= 2) markDataBlocked();
+                }
                 return;
             }
             pageFailStreak = 0;
@@ -2795,14 +3096,12 @@ nodes.btnRead.onclick = runRead;
             const total = stat.dashTotal + stat.earnTotal;
             if (!total) {
                 // 页面拿到了却一个活动都解析不出来：多是站点结构变化或账号当天确实无活动
-                warnParseEmpty('活动');
+                warnParseEmpty('活动', anchorStat(dashHtml) + ' / ' + anchorStat(earnHtml));
                 if (state.promosTotal > 0) return; // 有旧值时保留，避免面板被清零
             }
             state.promosDone = done;
             state.promosTotal = total;
-            try {
-                GM_setValue('mr_promo_score', JSON.stringify({ date: getTodayYmd(), done: state.promosDone, total: state.promosTotal }));
-            } catch { }
+            savePromoScore();
             render();
             // 复用刚拉到的 dashboard HTML 顺带检测可领取积分，省一次请求
             checkClaimablePoints(dashHtml, true);
@@ -2811,14 +3110,19 @@ nodes.btnRead.onclick = runRead;
 
     // 用户去登录后切回本页面：自动重拉一次缺的数据，不必等 1 分钟轮询或手动点按钮
     let lastLoginRecoverAt = 0;
-    function recoverFromLogin() {
+    async function recoverFromLogin() {
         const now = Date.now();
         if (now - lastLoginRecoverAt < 30 * 1000) return;
         lastLoginRecoverAt = now;
-        log('🔄 检测到页面重新可见，正在确认登录状态…');
-        refreshPromoScore();
-        readPunchcardProgress().catch(() => { });
-        updateData().catch(() => { });
+        clearPageCache();
+        // 只有确实在等登录恢复时才吭声，平时切标签页回来属于正常刷新，不必打日志
+        if (state.needLogin) log('🔄 页面重新可见，正在确认登录状态…');
+        // 串行执行：前一步抓到的 dash / earn 会进 45 秒缓存，后两步直接复用。
+        try {
+            await refreshPromoScore();
+            await readPunchcardProgress();
+            await updateData();
+        } catch { }
     }
 
     // 可领取积分：dashboard 页出现「可领取」元素时，在面板显示待领积分并每天通知一次
@@ -2868,16 +3172,17 @@ nodes.btnRead.onclick = runRead;
             if (!amount) amount = claimableFromDashboard();
             const prev = state.claimablePoints || 0;
             state.claimablePoints = amount;
-            render();
+            // 首屏 updateData / refreshPromoScore / 兜底会各调一次，数值没变就不必重绘
+            if (amount !== prev) render();
             if (amount > prev) {
-                log(`🎁 发现 ${amount} 积分待领取，请打开 Rewards 页面手动领取`);
-                // 系统通知每天只弹一次，避免刷屏（沿用旧版 Config.claimNoticeDate 方案）
+                log(`🎁 发现 ${amount} 积分待领取，点「去领取」直达领取面板`);
+                // 系统通知每天只弹一次，避免刷屏
                 try {
                     if (typeof GM_notification === 'function' && GM_getValue('Config.claimNoticeDate', 0) !== getTodayYmd()) {
                         GM_setValue('Config.claimNoticeDate', getTodayYmd());
                         GM_notification({
                             title: 'Microsoft Rewards',
-                            text: `有 ${amount} 积分待领取，请打开 Rewards 页面手动领取`,
+                            text: `有 ${amount} 积分待领取，点面板「去领取」直达领取页面`,
                             timeout: 8000
                         });
                     }
@@ -2895,20 +3200,29 @@ nodes.btnRead.onclick = runRead;
         try {
             const { html: earnHtml } = await fetchRewardsPage(REWARDS.earn).catch(() => ({ html: '' }));
             if (!earnHtml) {
-                warnFetchFail('其他任务', REWARDS.earn);
+                warnFetchFail('其他任务', REWARDS.earn); // 内部已按 needLogin 去重
                 return; // 保留上次结果，不清空
             }
             const questIds = parseQuestIds(earnHtml);
             if (!questIds.length) {
-                // 只有确实抓到页面却解析不到任务时才清空（说明今天真的没有打卡任务）
-                warnParseEmpty('其他任务');
+                warnParseEmpty('其他任务', anchorStat(earnHtml));
+                // 已有缓存时保留：解析出 0 条多半是站点改版或拿到风控页，
+                // 不能把它当成"今天没有打卡任务"而把面板清空（活动和这里保持同一策略）
+                if ((state.quests || []).length) {
+                    render();
+                    return;
+                }
                 saveQuestState([]);
                 render();
                 return;
             }
             const prevList = state.quests || [];
             const results = [];
-            for (const questId of questIds) {
+            for (let qi = 0; qi < questIds.length; qi++) {
+                // 放在循环开头（而不是末尾），这样中途 continue 也不会漏掉间隔。
+                // 打卡详情页是逐个抓的，太快等于一秒点开好几页；0.8–2 秒接近真人翻页。
+                if (qi > 0) await sleep(randomRange(800, 2000));
+                const questId = questIds[qi];
                 const questUrl = REWARDS.quest + encodeURIComponent(questId);
                 const { html } = await fetchRewardsPage(questUrl, CONFIG.ua.rewardsApp).catch(() => ({ html: '' }));
                 const prev = prevList.find(r => r && r.id === questId);
@@ -2953,11 +3267,11 @@ nodes.btnRead.onclick = runRead;
         let dash = '', earn = '', loginHit = false;
         const fromOf = { dash: '-', earn: '-' };
         try {
-            const r = await fetchRewardsPage(REWARDS.dash);
+            const r = await fetchRewardsPage(REWARDS.dash, '', { force: true });
             dash = r.html; fromOf.dash = r.from; if (r.login) loginHit = true;
         } catch (e) { add('dash ERR ' + e.message); }
         try {
-            const r = await fetchRewardsPage(REWARDS.earn);
+            const r = await fetchRewardsPage(REWARDS.earn, '', { force: true });
             earn = r.html; fromOf.earn = r.from; if (r.login) loginHit = true;
         } catch (e) { add('earn ERR ' + e.message); }
         add(`fetch from: dash=${fromOf.dash} earn=${fromOf.earn} login=${loginHit ? 'YES' : 'no'}`
@@ -3008,7 +3322,7 @@ nodes.btnRead.onclick = runRead;
         GM_registerMenuCommand('🔍 导出 Rewards 诊断日志', () => { runDiagnostics(); });
     }
 
-    // 搜索模块：重构版（动态判定合并后的总搜索进度）
+    // ========== 搜索 ==========
     const runSearch = async () => {
         if (state.running) {
             state.running = false;
@@ -3022,13 +3336,12 @@ nodes.btnRead.onclick = runRead;
         updateAllButton();
         await waitWhilePaused();
 
-        // 搜索前先同步一次最新数据
-        await updateData();
+        // 搜索前先同步一次最新数据；一键执行里上一步刚同步过（只隔 5–12 秒）就不重复拉
+        if (!state.syncAt || Date.now() - state.syncAt > 30000) await updateData();
 
         // 延时跟着环境走：手机慢一点，电脑快一点
         const envDelay = ENV_MOBILE ? CONFIG.mobile : CONFIG.pc;
 
-        // 执行单次搜索与奖励触发
         // 站点 = 当前页面所在域名（cn.bing.com / www.bing.com）；UA = 运行环境（手机/电脑）
         const doSearch = async (query) => {
             const host = currentSearchHost();
@@ -3039,7 +3352,6 @@ nodes.btnRead.onclick = runRead;
             const searchUrl = `https://${host}/search?q=${encodeURIComponent(query)}&form=QBLH`;
 
             try {
-                // 1. 发送标准的 Bing 搜索请求
                 const searchResult = await gmRequest({
                     url: searchUrl,
                     headers: {
@@ -3049,8 +3361,18 @@ nodes.btnRead.onclick = runRead;
                     }
                 });
 
-                // 提取 IG 用于上报
-                const igMatch = searchResult.match(/,IG:"([^"]+)"/) || searchResult.match(/"IG":"([^"]+)"/);
+                // 结果页校验：被重定向到登录 / 验证页时页面里没有结果容器，
+                // 这种情况下后面的上报一定是白发的，不能算一次成功搜索
+                const body = String(searchResult || '');
+                const looksResults = /id="b_results"|class="b_results"|id="sb_form_q"|class="b_algo"/.test(body);
+                // 关键：正常搜索页头部本来就带「登录」入口（login.live.com / account.live.com），
+                // 未登录 Bing 时几乎必然出现，甚至 <link rel="dns-prefetch"> 里也有。
+                // 所以「页面里出现登录域名」不能当重定向依据 —— 只要拿到了结果容器就是正常结果页。
+                const looksLogin = !looksResults &&
+                    /login\.live\.com|account\.live\.com|id="i0116"|<title>\s*(?:Sign in|登录)/i.test(body);
+                const igMatch = body.match(/,IG:"([^"]+)"/) || body.match(/"IG":"([^"]+)"/);
+                if (looksLogin) throw new Error('结果页被重定向到登录页，请先登录 rewards.bing.com');
+                if (!igMatch && !looksResults) throw new Error('未取到有效搜索结果页');
                 const ig = igMatch ? igMatch[1] : crypto.randomUUID().replace(/-/g, '').toUpperCase();
 
                 // 2. 使用微软 Rewards 专用侧边栏/头部埋点上报积分
@@ -3061,7 +3383,11 @@ nodes.btnRead.onclick = runRead;
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
                 };
 
-                // 触发奖励计数埋点
+                // 真实浏览器是「结果页渲染完 → 停一会 → 再发埋点」，三个请求连发太整齐。
+                // 这里插两段几百毫秒的随机间隔，节奏更像人手搜索。
+                await sleep(randomRange(400, 1200));
+
+                // 辅助埋点：失败不影响计数，静默跳过
                 await gmRequest({
                     method: 'POST',
                     url: `https://${host}/rewardsapp/ncheader?ver=88888888&IID=SERP.5047&IG=${ig}&ajaxreq=1`,
@@ -3069,50 +3395,47 @@ nodes.btnRead.onclick = runRead;
                     data: 'wb=1%3bi%3d1%3bv%3d1'
                 }).catch(() => {});
 
-                // 触发活动报告接口
+                await sleep(randomRange(700, 1800));
+
+                // 主上报接口：真正决定这一搜有没有被计入，抛错则不算进度
                 await gmRequest({
                     method: 'POST',
                     url: `https://${host}/rewardsapp/reportActivity?IG=${ig}&IID=SERP.5047&q=${encodeURIComponent(query)}&ajaxreq=1`,
                     headers: reportHeaders,
                     data: `url=${encodeURIComponent(searchUrl)}&V=web`
-                }).catch(() => {});
+                });
 
                 log(`✓ 搜索: "${query.substring(0, 12)}..."`);
+                return true;
             } catch (e) {
                 console.error('[Rewards] 搜索异常:', e);
                 log(`✗ 搜索失败: ${e.message}`);
+                return false;
             }
         };
-        // 精确等待函数（优化日志输出频率，彻底杜绝刷屏）
-        const preciseWait = async (ms) => {
-            state.countdownStartTime = Date.now();
-            state.countdownDuration = ms;
+        const preciseWait = async (ms, label) => {
             let endTime = Date.now() + ms;
 
-            const totalSecs = Math.ceil(ms / 1000);
-            if (totalSecs > 60) {
-                const mins = (totalSecs / 60).toFixed(1);
-                log(`⏳ 等待中，预计需要 ${mins} 分钟...`);
-            } else if (totalSecs > 0) {
-                log(`⏳ 等待 ${totalSecs} 秒...`);
+            // 打一位小数：20.4 秒和 27.9 秒一眼能看出间隔是随机的
+            const secs = ms / 1000;
+            const tail = label ? `（${label}）` : '';
+            if (secs > 60) {
+                log(`⏳ 等待中，预计需要 ${(secs / 60).toFixed(1)} 分钟${tail}...`);
+            } else if (secs >= 1) {
+                log(`⏳ 等待 ${secs.toFixed(1)} 秒${tail}...`);
             }
 
             while (Date.now() < endTime && state.running) {
                 if (state.manualPaused) {
-                    const pausedMs = await waitWhilePaused();
-                    endTime += pausedMs;
-                    state.countdownStartTime += pausedMs;
+                    // 手动暂停多久，就把结束时间顺延多久
+                    endTime += await waitWhilePaused();
                     continue;
                 }
                 const remaining = Math.max(0, endTime - Date.now());
                 await sleep(Math.min(500, remaining));
             }
-            
-            state.countdownStartTime = 0;
-            state.countdownDuration = 0;
         };
 
-        // 暂停检查函数（优化：如果已满直接跳过暂停）
         const checkPause = async () => {
             if (!CONFIG.pause.enabled) return;
             if (state.searchCur >= state.searchMax) return;
@@ -3121,14 +3444,10 @@ nodes.btnRead.onclick = runRead;
             saveProgress();
 
             if (state.searchCount % CONFIG.pause.interval === 0) {
-                state.isPaused = true;
                 const pauseMs = CONFIG.pause.duration();
                 const pauseMinutes = Math.round(pauseMs / 60000);
                 log(`⏸️ 已完成 ${state.searchCount} 次搜索，触发防风控暂停 ${pauseMinutes} 分钟...`);
-                state.pauseEndTime = Date.now() + pauseMs;
                 await preciseWait(pauseMs);
-                state.isPaused = false;
-                state.pauseEndTime = 0;
                 log(`▶️ 暂停结束，继续搜索...`);
             }
         };
@@ -3141,20 +3460,36 @@ nodes.btnRead.onclick = runRead;
             let searchIndex = 0;
             // 容错：达到预估上限后，若服务器真实进度仍未满，允许再补搜（最多 2 轮）
             let recheckCount = 0;
+            // 连续失败计数：结果页异常 / 上报被拒时不计进度，连续多次直接停，避免空跑
+            let failStreak = 0;
 
             while (state.searchCur < state.searchMax && state.running) {
                 await waitWhilePaused();
 
                 searchIndex++;
                 const q = await getHotQuery();
-                await doSearch(q);
+                const ok = await doSearch(q);
 
-                // 👈 核心修复：每次做完立即同步预估积分 (+3分/次)
+                if (!ok) {
+                    failStreak++;
+                    log(`⚠️ 本次搜索未计入进度（连续失败 ${failStreak} 次）`);
+                    if (failStreak >= 5) {
+                        log('🛑 连续 5 次搜索未生效，已停止：请确认已登录 rewards.bing.com，或先手动搜一次过验证码');
+                        break;
+                    }
+                    // 失败通常不是节奏问题，短等再试即可，不必等完整搜索间隔。
+                    // 这里单独打「失败重试」并在日志里带小数秒，方便确认每次间隔都不同（不是固定值）
+                    await preciseWait(randomRange(12000, 25000), '失败重试');
+                    continue;
+                }
+                failStreak = 0;
+
+                // 只有结果页有效、主上报被接受，才推进本地进度（+3 分/次）
                 state.searchCur = Math.min(state.searchMax, state.searchCur + 3);
                 render();
                 await checkPause();
                 if (!state.running) break;
-                await preciseWait(randomRange(envDelay.minDelay, envDelay.maxDelay));
+                await preciseWait(randomRange(envDelay.minDelay, envDelay.maxDelay), '下一次搜索');
 
                 // 降低更新频率，每 5 次搜索同步一次数据，避免进度丢失
                 if (searchIndex % 5 === 0) {
@@ -3207,9 +3542,18 @@ nodes.btnRead.onclick = runRead;
         log('🚀 一键执行开始');
         try {
             await waitWhilePaused();
+            // 任务之间留随机间隔，避免四个任务首尾相接、请求时间戳过于整齐
+            const gap = async (to) => {
+                const ms = randomRange(5000, 12000);
+                log(`☕ 随机等待 ${(ms / 1000).toFixed(1)} 秒（${to}）...`);
+                await sleep(ms);
+            };
             await runSign();
+            await gap('进入阅读');
             await runRead();
+            await gap('进入活动');
             await runPromo();
+            await gap('进入搜索');
             await runSearch();
         } finally {
             state.allRunning = false;
@@ -3219,8 +3563,6 @@ nodes.btnRead.onclick = runRead;
     // Init
     (async () => {
         try {
-            loginCookie = await getCookies('https://login.live.com');
-
             // 回显今日已检查过的打卡进度，避免刷新页面后进度栏空白
             state.quests = loadQuestState();
             // 活动进度同样回显当天缓存（单位：积分）
@@ -3233,28 +3575,24 @@ nodes.btnRead.onclick = runRead;
             } catch { }
             render();
             await updateData();
-            // 当天还没有统计结果时，初始化阶段主动算一次，面板不再显示 0/0
-            await Promise.all([
-                state.promosTotal ? null : refreshPromoScore(),
-                readPunchcardProgress()
-            ]);
+            // 当天还没有统计结果时，初始化阶段主动算一次，面板不再显示 0/0。
+            // 顺序执行 + 小间隔，后一次能命中缓存，总请求数更少。
+            if (!state.promosTotal) {
+                await refreshPromoScore();
+                await sleep(randomRange(800, 2000));
+            }
+            await readPunchcardProgress();
 
+            // 阅读进度补查走统一入口，复用同轮 dapi/me 响应，不重复发请求。
             try {
-                const info = await withAccessTokenRequest(token => gmRequest({
-                    url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
-                    headers: { 
-                        'Authorization': `Bearer ${token}`, 
-                        'X-Rewards-AppId': CONFIG.mobileApi.appId, 
-                        'X-Rewards-IsMobile': 'true' 
-                    }
-                }));
-                if (info) {
-                    const d = typeof info === 'string' ? JSON.parse(info) : info;
-                    const p = d.response?.promotions?.find(x => x.attributes?.offerid === 'ENUS_readarticle3_30points');
-                    if (p && p.attributes) { 
-                        state.readCur = parseInt(p.attributes.progress) || 0; 
-                        state.readMax = parseInt(p.attributes.max) || 30; 
-                        render(); 
+                const token = await getAccessToken();
+                if (token) {
+                    const d = await getDapiMe(token, currentRegion(), true);
+                    const p = d?.response?.promotions?.find(x => x.attributes?.offerid === READ_OFFER_ID);
+                    if (p && p.attributes) {
+                        state.readCur = parseInt(p.attributes.progress) || 0;
+                        state.readMax = parseInt(p.attributes.max) || 30;
+                        render();
                     }
                 }
             } catch { }
@@ -3268,22 +3606,27 @@ nodes.btnRead.onclick = runRead;
         log(`🌟 脚本就绪 v${APP_VERSION}`);
     })();
 
-    setInterval(updateData, 60000);
-
-    // 偶发抓取失败自动恢复：首屏没拿到活动/打卡/可领取积分时，每 5 分钟补拉一次，
-    // 网络恢复或登录态刷新后无需用户手动点按钮。
+    // 数据轮询 / 徽章兜底 / 缺数据自动恢复合并成一个 60 秒 tick，减少唤醒次数。
     let lastRecoverAt = 0;
     setInterval(() => {
+        // ① 数据轮询；② 徽章兜底放在它的 finally 里，用的是本轮更新后的 syncAt，更准
+        updateData().finally(() => {
+            if (state.needLogin || state.syncBusy) return;
+            const lastOk = state.syncAt || state.syncStartedAt || 0;
+            if (lastOk && Date.now() - lastOk > SYNC_STALE_MS) render();
+        });
+
+        // ③ 首屏没拿到活动 / 打卡 / 可领取积分时，每 5 分钟补拉一次
         const now = Date.now();
-        if (now - lastRecoverAt < 5 * 60 * 1000) return;
-        const needPromo = !state.promosTotal;
-        const needQuest = !(state.quests || []).length;
-        const needClaim = state.claimablePoints == null;
-        if (!needPromo && !needQuest && !needClaim) { lastRecoverAt = now; return; }
-        lastRecoverAt = now;
-        if (needPromo) refreshPromoScore();
-        if (needQuest) readPunchcardProgress();
-        if (needClaim) checkClaimablePoints(null, true);
+        if (now - lastRecoverAt >= 5 * 60 * 1000) {
+            lastRecoverAt = now;
+            const needPromo = !state.promosTotal;
+            const needQuest = !(state.quests || []).length;
+            const needClaim = state.claimablePoints == null;
+            if (needPromo) refreshPromoScore();
+            if (needQuest) readPunchcardProgress();
+            if (needClaim) checkClaimablePoints(null, true);
+        }
     }, 60000);
 
 })();
